@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import copy
 import io
 import json
 import random
@@ -23,7 +22,7 @@ class Cache:
     file_path: Path
     executor: concurrent.futures.Executor
     last_known_timestamp: datetime.datetime | None = None
-    base_file_creation_interval: int = 5 * 60
+    base_file_creation_interval: int = 30 * 60
 
     def save_base_file(self, timestamp: datetime.datetime, content: dict):
         if (self.file_path / "current" / "base_timestamp.txt").exists():
@@ -68,7 +67,7 @@ class Cache:
 
     @staticmethod
     def _compress_folder(folder: Path, file_path: Path):
-        print("_compressing folder")
+        # print("_compressing folder")
         base_timestamp = datetime.datetime.fromisoformat((folder / "base_timestamp.txt").read_text())
 
         file_path = file_path / "data" / (base_timestamp.strftime("%Y-%m-%dT%H-%M-%S") + ".tar.gz")
@@ -171,7 +170,6 @@ class Cache:
 class NextBikeCrawler:
     cache: Cache
     base_timestamp: datetime.datetime | None = None
-    base_file_creation_interval: int = 30 * 60
     wait_interval: int = 10
 
     def update(self, crawl_time: datetime.datetime, session: requests.Session):
