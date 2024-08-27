@@ -3,3 +3,4 @@ requests~=2.32.3
 jsonpatch~=1.33
 folium~=0.17.0
 tqdm~=4.66.5
+psutil~=6.0.0

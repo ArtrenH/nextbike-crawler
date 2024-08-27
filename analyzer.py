@@ -1,6 +1,3 @@
-import concurrent.futures
-import copy
-
 import dataclasses
 import datetime
 import itertools
@@ -13,7 +10,7 @@ from folium.plugins import HeatMap
 from folium.plugins import HeatMapWithTime
 from tqdm import tqdm
 
-from crawler import Cache
+from cache import *
 
 
 @dataclasses.dataclass
@@ -72,10 +69,15 @@ class DataAnalyzer:
         m.save("locations_map.html")
 
     def animate_locations(self):
-        cache = Cache(Path("cache"), None)
+        cache = Cache(
+            file_path=Path("cache"),
+            executor=None,
+            data_store=FileSystemStore(Path("cache/data"))
+        )
 
-        # iterable = cache.iter_compressed(datetime.datetime.strptime("2024-08-24T18-30-00", "%Y-%m-%dT%H-%M-%S").replace(tzinfo=datetime.timezone.utc))
-        iterable = cache.iter_files(since=datetime.datetime.min.replace(tzinfo=datetime.timezone.utc), until=datetime.datetime.max.replace(tzinfo=datetime.timezone.utc))
+        iterable = cache.iter_archive(datetime.datetime.strptime("2024-08-26T17-30-00", "%Y-%m-%dT%H-%M-%S").replace(tzinfo=datetime.timezone.utc))
+        # iterable = cache.iter_files(since=datetime.datetime.min.replace(tzinfo=datetime.timezone.utc), until=datetime.datetime.max.replace(tzinfo=datetime.timezone.utc))
+        timestamps = []
 
         bikes = defaultdict(list)
         for i, (timestamp, data) in tqdm(enumerate(iterable), total=180*4):
@@ -84,34 +86,41 @@ class DataAnalyzer:
             for bike_nr, pos in country_bikes.items():
                 bikes[bike_nr].append((i, timestamp, pos))
 
+            timestamps.append(timestamp)
+
             # if i == 10:
             #     break
 
-        bikes_interpolated: dict[str, dict[int, tuple[float, float]]] = {}
+        bikes_interpolated: dict[str, dict[int, list[float]]] = {}
         for bike_nr, bike_positions in bikes.items():
-            new_positions: dict[int, tuple[float, float]] = {}
+            new_positions: dict[int, list[float]] = {}
             for (i1, t1, p1), (i2, t2, p2) in itertools.pairwise(bike_positions):
                 for di in range(0, i2 - i1 + 1):
                     px = p1[0] + di / (i2 - i1) * (p2[0] - p1[0])
                     py = p1[1] + di / (i2 - i1) * (p2[1] - p1[1])
-                    new_positions[i1 + di] = px, py
+                    new_positions[i1 + di] = [px, py]
 
             bikes_interpolated[bike_nr] = new_positions
 
-        _plot_data: dict[int, list[tuple[float, float]]] = defaultdict(list)
+        _plot_data: dict[int, list[list[float]]] = defaultdict(list)
         for bike_data in bikes_interpolated.values():
             for i, pos in bike_data.items():
                 _plot_data[i].append(pos)
 
         plot_data = [_plot_data[i] for i in range(max(_plot_data))]
+        timestamp_index = [timestamps[i].isoformat() for i in range(max(_plot_data))]
 
         m = folium.Map()
-        HeatMapWithTime(plot_data, auto_play=True, max_opacity=0.8).add_to(m)
+        HeatMapWithTime(plot_data, auto_play=True, max_opacity=0.8, index=timestamp_index).add_to(m)
         m.save("animated_heatmap.html")
 
 
 def main():
-    cache = Cache(Path("cache"), None)
+    cache = Cache(
+        file_path=Path("cache"),
+        executor=None,
+        data_store=FileSystemStore(Path("cache/data"))
+    )
     # cache.decompress(datetime.datetime.strptime("2024-08-24T18-30-00", "%Y-%m-%dT%H-%M-%S").replace(tzinfo=datetime.timezone.utc))
     # return
     d = DataAnalyzer()
