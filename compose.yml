@@ -1,0 +1,7 @@
+services:
+  crawler:
+    container_name: nextbike_crawler
+    build: .
+    volumes:
+      - ./cache:/app/cache
+    restart: unless-stopped
