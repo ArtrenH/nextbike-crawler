@@ -90,6 +90,9 @@ class FilePidLock:
 
 
 class Store(typing.Protocol):
+    """
+    This store only saves and loads the compressed files. All cache file operations are handled by the Cache directly.
+    """
     def save_file(self, filename: str, content: bytes):
         ...
 
