@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import concurrent.futures
+import os
 import datetime
 import dataclasses
 import time
 from pathlib import Path
 
 import requests
+from dotenv import load_dotenv
 
 from cache import *
+
+load_dotenv()
 
 
 @dataclasses.dataclass
@@ -41,7 +45,7 @@ def main():
     cache = Cache(
         file_path=Path("cache"),
         executor=concurrent.futures.ProcessPoolExecutor(5),
-        data_store=FileSystemStore(Path("cache/data"))
+        data_store=FileSystemStore(Path(os.getenv("DATA_STORE_PATH", "cache/data")))
     )
     cache.init()
 
