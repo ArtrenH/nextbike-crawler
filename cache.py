@@ -133,7 +133,9 @@ class Cache:
         FilePidLock(self.file_path / "lock").acquire()
 
     def recover_lost_compression_tasks(self):
-        for folder in (self.file_path / "compression").iterdir():
+        file_path = self.file_path / "compression"
+        file_path.mkdir(parents=True, exist_ok=True)
+        for folder in file_path.iterdir():
             if not folder.is_dir():
                 print(f"Unexpected file in compression folder: {folder!s}")
                 continue
