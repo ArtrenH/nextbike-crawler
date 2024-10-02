@@ -11,6 +11,7 @@ import random
 import shutil
 import tarfile
 import time
+import traceback
 import typing
 from pathlib import Path
 
@@ -132,6 +133,18 @@ class FileSystemStore:
         return (f.name for f in self.path.iterdir())
 
 
+def log_exceptions(func):
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            # print(f"Exception in {func.__name__!r}: {e!s}")
+            traceback.print_exc()
+            raise
+
+    return wrapper
+
+
 @dataclasses.dataclass
 class Cache:
     file_path: Path
@@ -220,6 +233,7 @@ class Cache:
         self.executor.submit(self._compress_folder, folder=target_path, store=self.data_store)
 
     @staticmethod
+    @log_exceptions
     def _compress_folder(folder: Path, store: Store):
         t1 = time.perf_counter()
         n_files = 1
