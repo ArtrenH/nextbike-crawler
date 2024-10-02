@@ -5,19 +5,30 @@ import dataclasses
 import datetime
 import io
 import json
+import logging
 import multiprocessing
 import os
 import random
 import shutil
+import sys
 import tarfile
 import time
-import traceback
 import typing
 from pathlib import Path
 
 import bson
 import jsonpatch
 import psutil
+
+__all__ = [
+    "CouldNotAcquireLockException",
+    "FilePidLock",
+    "Store",
+    "FileSystemStore",
+    "Cache"
+]
+
+log = logging.getLogger("Cache")
 
 
 class CouldNotAcquireLockException(Exception):
@@ -133,18 +144,6 @@ class FileSystemStore:
         return (f.name for f in self.path.iterdir())
 
 
-def log_exceptions(func):
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            # print(f"Exception in {func.__name__!r}: {e!s}")
-            traceback.print_exc()
-            raise
-
-    return wrapper
-
-
 @dataclasses.dataclass
 class Cache:
     file_path: Path
@@ -166,20 +165,20 @@ class Cache:
         file_path.mkdir(parents=True, exist_ok=True)
         for folder in file_path.iterdir():
             if not folder.is_dir():
-                print(f"Unexpected file in compression folder: {folder!s}")
+                log.error(f"Unexpected file in compression folder: {folder!s}")
                 continue
             if not ((folder / "base_timestamp.txt").exists() and (folder / "base.bson").exists()):
-                print(f"Missing base.bson or base_timestamp.txt in {folder!s}.")
+                log.error(f"Missing base.bson or base_timestamp.txt in {folder!s}.")
                 continue
 
-            print(f"Recovering lost compression task at {folder!s}.")
+            log.info(f"Recovering lost compression task at {folder!s}.")
             self.executor.submit(self._compress_folder, folder=folder, store=self.data_store)
 
     def save_base_file(self, timestamp: datetime.datetime, content: dict):
         if (self.file_path / "current" / "base_timestamp.txt").exists():
             self.compress_folder()
 
-        print("saving base file...")
+        log.info("saving base file.")
         folder_path = self.file_path / "current"
 
         folder_path.mkdir(parents=True, exist_ok=True)
@@ -191,14 +190,14 @@ class Cache:
         )
 
     def save_diff_file(self, timestamp: datetime.datetime, content: dict):
-        print("saving patch file...")
+        log.info("saving patch file.")
 
         filename = timestamp.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H-%M-%S") + ".bson"
 
         (self.file_path / "current" / filename).write_bytes(bson.dumps(content))
 
     def save_file(self, timestamp: datetime.datetime, content: dict):
-        with (self.lock):
+        with self.lock:
             if self.last_known_timestamp is None:
                 self.save_base_file(timestamp, content)
                 self.last_known_timestamp = timestamp
@@ -223,8 +222,7 @@ class Cache:
             self.last_known_timestamp = timestamp
 
     def compress_folder(self):
-        print("compressing folder")
-
+        log.debug("Starting to compress current folder.")
         target_path = self.file_path / "compression" / random.randbytes(16).hex()
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -233,8 +231,23 @@ class Cache:
         self.executor.submit(self._compress_folder, folder=target_path, store=self.data_store)
 
     @staticmethod
-    @log_exceptions
+    def _log_exceptions(func):
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception:
+                log.critical("Exception in %s.", func.__qualname__, exc_info=True)
+                raise
+
+        return wrapper
+
+    @staticmethod
+    @_log_exceptions
     def _compress_folder(folder: Path, store: Store):
+        logger = log.getChild(folder.stem)
+
+        logger.debug("Starting compression task at %s.", folder)
+
         t1 = time.perf_counter()
         n_files = 1
         total_data = 0
@@ -245,7 +258,23 @@ class Cache:
         prev_file = bson.loads(base_file)
 
         filename = base_timestamp.strftime("%Y-%m-%dT%H-%M-%S") + ".tar.gz"
-        print("Compressing folder", folder, "to", filename)
+        logger.info("Compressing to %s.", filename)
+
+        try:
+            compressed_file = (folder / "compressed.tar.xz").read_bytes()
+        except FileNotFoundError:
+            pass
+        else:
+            logger.info("Folder was already compressed.")
+            try:
+                store.save_file(filename, compressed_file)
+            except:
+                logger.error("Could not save compressed file.")
+                raise
+            else:
+                shutil.rmtree(folder)
+                logger.info("Done. Deleted folder.")
+                return
 
         file_io = io.BytesIO()
         with tarfile.open(fileobj=file_io, mode="w:gz") as tar:
@@ -274,16 +303,23 @@ class Cache:
                     n_files += 1
                     total_data += len(diff_bson)
 
-        store.save_file(filename, file_io.getvalue())
-
-        shutil.rmtree(folder)
-
         duration = time.perf_counter() - t1
-        print(
+        logger.info(
             f"Finished archive {filename!r}. "
             f"Took {duration:.2f} s for {n_files} files ({duration / n_files:.2f} s/file). "
-            f"Compression ratio: {total_data / file_io.tell():.2f}."
+            f"Compression ratio: {total_data / file_io.tell():.2f}"
         )
+
+        try:
+            logger.info("Storing compressed file.")
+            store.save_file(filename, file_io.getvalue())
+        except Exception:
+            logger.error("Could not store compressed file. Saving into compression task.")
+            (folder / "compressed.tar.xz").write_bytes(file_io.getvalue())
+            raise
+
+        shutil.rmtree(folder)
+        logger.info("Done. Deleted folder.")
 
     def iter_archive(
         self,

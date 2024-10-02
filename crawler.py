@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 import os
 import datetime
 import dataclasses
@@ -10,9 +11,11 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-from cache import *
+from my_cache import *
 
 load_dotenv()
+
+log = logging.getLogger("NextBikeCrawler")
 
 
 @dataclasses.dataclass
@@ -22,10 +25,10 @@ class NextBikeCrawler:
     wait_interval: int = 10
 
     def update(self, crawl_time: datetime.datetime, session: requests.Session):
-        print("downloading...")
+        log.info(f"Updating data at {crawl_time}")
         response = session.get('https://maps.nextbike.net/maps/nextbike-live.json', headers={'Accept-Encoding': 'gzip'})
         self.cache.save_file(crawl_time, response.json())
-        print("...done")
+        log.info("...done")
 
     def wait_until_next_update(self) -> datetime.datetime:
         next_time = (time.time() // self.wait_interval + 1) * self.wait_interval
@@ -42,16 +45,25 @@ class NextBikeCrawler:
 
 
 def main():
-    cache = Cache(
-        file_path=Path("cache"),
-        executor=concurrent.futures.ProcessPoolExecutor(5),
-        data_store=FileSystemStore(Path(os.getenv("DATA_STORE_PATH", "cache/data")))
-    )
-    cache.init()
+    logging.basicConfig(level=logging.DEBUG, format="[%(asctime)s] [%(levelname)8s] %(name)s: %(message)s",
+                        datefmt="%Y-%m-%d %H:%M:%S")
+    logging.getLogger("urllib3").setLevel(logging.CRITICAL)
+    logging.getLogger("urllib3").propagate = False
+    logging.getLogger("charset_normalizer").setLevel(logging.CRITICAL)
+    logging.getLogger("charset_normalizer").propagate = False
 
-    crawler = NextBikeCrawler(cache)
+    with concurrent.futures.ThreadPoolExecutor(5) as executor:
+        cache = Cache(
+            file_path=Path("cache"),
+            executor=executor,
+            data_store=FileSystemStore(Path(os.getenv("DATA_STORE_PATH", "cache/data"))),
+            base_file_creation_interval=30*60
+        )
+        cache.init()
 
-    crawler.crawl()
+        crawler = NextBikeCrawler(cache)
+
+        crawler.crawl()
 
 
 if __name__ == "__main__":
