@@ -34,53 +34,65 @@ class FilePidLock:
     def is_lock_valid(
         file_path: Path
     ) -> typing.Literal[False] | tuple[int, int]:
-        items = file_path.name.split("-", 2)
-        if len(items) == 3:
-            _, pid_str, timestamp_str = items
+        items = file_path.name.split("-", 3)
+        if len(items) == 4:
+            _, pid_str, create_time_str, timestamp_str = items
         else:
             return False
 
         try:
             locked_pid = int(pid_str)
+            create_time_ns = int(create_time_str)
             timestamp_int = int(timestamp_str)
         except ValueError:
             return False
 
-        if psutil.pid_exists(locked_pid):
+        if psutil.pid_exists(locked_pid) and int(psutil.Process(locked_pid).create_time() * 1e9) == create_time_ns:
             return locked_pid, timestamp_int
         else:
             return False
 
-    def write_lock(self) -> tuple[Path, int, int]:
+    def write_lock(self) -> tuple[Path, int]:
         timestamp = time.time_ns()
         pid = os.getpid()
-        lock_file = self.file_path / f"{random.randbytes(16).hex()}-{pid}-{int(timestamp)}"
+        create_time_str = str(int(psutil.Process(pid).create_time() * 1e9))
+        lock_file = self.file_path / f"{random.randbytes(16).hex()}-{pid}-{create_time_str}-{int(timestamp)}"
         lock_file.touch()
-        return lock_file, timestamp, pid
+        return lock_file, timestamp
 
-    def check_existing_locks(self, our_lock: tuple[int, int] | None = None):
+    def check_existing_locks(self, our_lock: tuple[str, int] | None = None):
         for lock_file in self.file_path.iterdir():
-            if not (lock_data := self.is_lock_valid(lock_file)):
-                lock_file.unlink(missing_ok=True)
-            else:
-                if our_lock is not None and our_lock[0] == lock_data[0]:
-                    if lock_data[1] <= our_lock[1]:
-                        continue
+            if our_lock is not None and lock_file.name == our_lock[0]:
+                continue
 
-                raise CouldNotAcquireLockException(
-                    f"Could not acquire lock at {self.file_path!s}. "
-                    f"Blocked by PID {lock_data[0]!s} since {datetime.datetime.fromtimestamp(lock_data[1] * 1e-9)!s}. "
-                    f"File: {lock_file!s}"
-                )
+            lock_data = self.is_lock_valid(lock_file)
+
+            if not lock_data:
+                # remove invalid lock files
+                lock_file.unlink(missing_ok=True)
+                continue
+
+            locked_pid, timestamp = lock_data
+
+            if our_lock is not None and timestamp > our_lock[1]:
+                # our lock is older than the existing lock
+                lock_file.unlink(missing_ok=True)
+                continue
+
+            raise CouldNotAcquireLockException(
+                f"Could not acquire lock at {self.file_path!s}. "
+                f"Blocked by PID {lock_data[0]!s} since {datetime.datetime.fromtimestamp(lock_data[1] * 1e-9)!s}. "
+                f"File: {lock_file.name!r}"
+            )
 
     def acquire(self) -> Path:
         self.file_path.mkdir(parents=True, exist_ok=True)
 
         self.check_existing_locks()
 
-        file_path, timestamp, pid = self.write_lock()
+        file_path, timestamp = self.write_lock()
 
-        self.check_existing_locks(our_lock=(pid, timestamp))
+        self.check_existing_locks(our_lock=(file_path.name, timestamp))
 
         # redundancy check
         if not file_path.exists():
@@ -93,6 +105,7 @@ class Store(typing.Protocol):
     """
     This store only saves and loads the compressed files. All cache file operations are handled by the Cache directly.
     """
+
     def save_file(self, filename: str, content: bytes):
         ...
 
@@ -337,8 +350,24 @@ class Cache:
 
 def main():
     lock = FilePidLock(Path("cache/lock2"))
-    lock.acquire()
-    lock.acquire()
+    lock_file = lock.acquire()
+    # lock_file.unlink()
+    try:
+        lock.acquire()
+    except CouldNotAcquireLockException as e:
+        print(e)
+    else:
+        raise AssertionError("Lock acquired twice.")
+
+    print("Releasing lock.")
+    lock_file.unlink()
+
+    try:
+        lock.acquire()
+    except CouldNotAcquireLockException as e:
+        raise AssertionError("Could not acquire lock.") from e
+    else:
+        print("Lock acquired.")
 
 
 if __name__ == "__main__":
