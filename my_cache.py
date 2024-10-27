@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import dataclasses
 import datetime
 import io
@@ -24,6 +25,7 @@ __all__ = [
     "FilePidLock",
     "Store",
     "FileSystemStore",
+    "DirtyFileSystemStore",
     "Cache"
 ]
 
@@ -134,7 +136,6 @@ class FileSystemStore:
     def save_file(self, filename: str, content: bytes):
         self.path.mkdir(parents=True, exist_ok=True)
 
-        # with contextlib.suppress(OSError):
         (self.path / (filename + ".tmp")).write_bytes(content)
         (self.path / (filename + ".tmp")).rename(self.path / filename)
 
@@ -143,6 +144,12 @@ class FileSystemStore:
 
     def iterdir(self):
         return (f.name for f in self.path.iterdir())
+
+
+class DirtyFileSystemStore(FileSystemStore):
+    def save_file(self, filename: str, content: bytes):
+        with contextlib.suppress(OSError):
+            super().save_file(filename, content)
 
 
 @dataclasses.dataclass

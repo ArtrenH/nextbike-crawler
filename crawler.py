@@ -55,11 +55,13 @@ def main():
     logging.getLogger("charset_normalizer").setLevel(logging.CRITICAL)
     logging.getLogger("charset_normalizer").propagate = False
 
+    store_type = DirtyFileSystemStore if bool(os.getenv("USE_DIRTY_STORE", False)) else FileSystemStore
+
     with concurrent.futures.ProcessPoolExecutor(max_workers=int(os.getenv("MAX_WORKERS", None))) as executor:
         cache = Cache(
             file_path=Path(os.getenv("CACHE_PATH", "cache")),
             executor=executor,
-            data_store=FileSystemStore(Path(os.getenv("DATA_STORE_PATH", "cache/data"))),
+            data_store=DirtyFileSystemStore(Path(os.getenv("DATA_STORE_PATH", "cache/data"))),
             base_file_creation_interval=int(os.getenv("BASE_FILE_CREATION_INTERVAL", 30 * 60)),
         )
         cache.init()
