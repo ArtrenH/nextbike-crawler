@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import contextlib
 import dataclasses
 import datetime
 import io
@@ -199,6 +198,7 @@ class Cache:
         (self.file_path / "current" / filename).write_bytes(bson.dumps(content))
 
     def save_file(self, timestamp: datetime.datetime, content: dict):
+        log.debug("save_file: acquiring lock.")
         with self.lock:
             if self.last_known_timestamp is None:
                 self.save_base_file(timestamp, content)
@@ -232,20 +232,16 @@ class Cache:
 
         self.executor.submit(self._compress_folder, folder=target_path, store=self.data_store)
 
-    @staticmethod
-    def _log_exceptions(func):
-        def wrapper(*args, **kwargs):
-            try:
-                return func(*args, **kwargs)
-            except Exception:
-                log.critical("Exception in %s.", func.__qualname__, exc_info=True)
-                raise
-
-        return wrapper
+    @classmethod
+    def _compress_folder(cls, *args, **kwargs):
+        try:
+            return cls.__compress_folder(*args, **kwargs)
+        except Exception:
+            log.critical("Exception in %s.", cls.__compress_folder.__qualname__, exc_info=True)
+            raise
 
     @staticmethod
-    @_log_exceptions
-    def _compress_folder(folder: Path, store: Store):
+    def __compress_folder(folder: Path, store: Store):
         logger = log.getChild(folder.stem)
 
         logger.debug("Starting compression task at %s.", folder)
@@ -270,7 +266,7 @@ class Cache:
             logger.info("Folder was already compressed.")
             try:
                 store.save_file(filename, compressed_file)
-            except:
+            except Exception:
                 logger.error("Could not save compressed file.")
                 raise
             else:
