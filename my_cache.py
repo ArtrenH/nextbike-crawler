@@ -135,9 +135,9 @@ class FileSystemStore:
     def save_file(self, filename: str, content: bytes):
         self.path.mkdir(parents=True, exist_ok=True)
 
-        with contextlib.suppress(OSError):
-            (self.path / (filename + ".tmp")).write_bytes(content)
-            (self.path / (filename + ".tmp")).rename(self.path / filename)
+        # with contextlib.suppress(OSError):
+        (self.path / (filename + ".tmp")).write_bytes(content)
+        (self.path / (filename + ".tmp")).rename(self.path / filename)
 
     def read_file(self, filename: str) -> bytes:
         return (self.path / filename).read_bytes()
