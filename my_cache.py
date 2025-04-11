@@ -381,7 +381,7 @@ class Cache[* T]:
 
         base_file_data = bson.loads(base_file)
         for preprocessor in preprocessors:
-            base_file_data = preprocessor.do(base_file_data)
+            preprocessor.do(base_file_data)
 
         prev_file = base_file_data
 
@@ -427,7 +427,7 @@ class Cache[* T]:
                     content = bson.loads(file.read_bytes())
 
                     for preprocessor in preprocessors:
-                        content = preprocessor.do(content)
+                        preprocessor.do(content)
 
                     diff = jsonpatch.make_patch(prev_file, content)
                     diff_bson = bson.dumps({"": diff.patch})
