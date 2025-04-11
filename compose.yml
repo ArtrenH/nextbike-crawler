@@ -3,6 +3,8 @@ services:
     container_name: nextbike_crawler
     build: .
     restart: unless-stopped
+#    volumes:
+#      - ./cache:/app/cache
 #    environment:
 #      - DATA_STORE_PATH="cache/data"
 #      - CACHE_PATH="cache"
