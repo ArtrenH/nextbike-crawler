@@ -2,6 +2,13 @@ services:
   crawler:
     container_name: nextbike_crawler
     build: .
-    volumes:
-      - ./cache:/app/cache
     restart: unless-stopped
+#    environment:
+#      - DATA_STORE_PATH="cache/data"
+#      - CACHE_PATH="cache"
+#      - WAIT_INTERVAL=10
+#      - BASE_FILE_CREATION_INTERVAL=1800
+#      - MAX_WORKERS=3
+#      - CACHE_FS_URL=ftp://user:passwd@example.com/path
+    env_file:
+      - .env

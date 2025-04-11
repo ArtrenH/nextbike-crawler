@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import copy
 import dataclasses
 import datetime
 import io
@@ -175,10 +176,10 @@ class DirtyFileSystemStore(FileSystemStore):
 
 
 class Preprocessor(typing.Protocol):
-    def do(self, data: dict) -> dict:
+    def do(self, data: dict) -> None:
         ...
 
-    def undo(self, data: dict) -> dict:
+    def undo(self, data: dict) -> None:
         ...
 
 
@@ -210,8 +211,6 @@ class JsonDictionarizer:
 
                     match.path.update(match.context.value, keyed_dict)
 
-        return data
-
     def undo(self, data):
         """
         :param rules: A list of (JSONPath, key_field) tuples.
@@ -228,26 +227,27 @@ class JsonDictionarizer:
              ensuring item_dict[key_field] = key_field_value.
         """
 
-        for jsonpath_expr, key_field in self.rules_parsed:
-            matches = jsonpath_expr.find(data)
+        # data = copy.copy(data)
+
+        for jsonpath_expr, key_field in reversed(self.rules_parsed):
+            matches: list[jsonpath_ng.DatumInContext] = jsonpath_expr.find(data)
 
             for match in matches:
-                dict_val = match.value
+                dict_val = match.value  # .copy()
 
-                # If the matched value is a dict, we assume it was originally an array
-                # keyed by `key_field`.
-                if isinstance(dict_val, dict):
-                    array_val = []
-                    for dict_key, item in dict_val.items():
-                        # # Ensure each item has the key_field property set to dict_key
-                        # if key_field not in item or item[key_field] != dict_key:
-                        #     item[key_field] = dict_key
-                        array_val.append(item)
+                array_val = list(dict_val.values())
 
-                    # Replace the dict in the original structure with the new array
-                    match.path.update(match.context.value, array_val)
+                # # Replace the dict in the original structure with the new array
+                # parent_path = match.path.child(jsonpath_ng.Parent())
+                # parent_val = parent_path.find(data)
+                # assert len(parent_val) == 1
+                #
+                # if parent_val[0].path == jsonpath_ng.This():
+                #     pass
+                # else:
+                #     parent_path.update(data, parent_val.context.copy())
 
-        return data
+                match.path.update(match.context.value, array_val)
 
 
 @dataclasses.dataclass
@@ -463,16 +463,29 @@ class Cache[* T]:
     ) -> typing.Generator[tuple[datetime.datetime, dict], None, None]:
         it = self.iter_archive_raw(timestamp)
 
-        type_, timestamp, base_data = next(it)
+        type_, timestamp, out = next(it)
         assert type_ == "base"
 
-        yield timestamp, base_data
+        for preprocessor in reversed(self.preprocessors):
+            preprocessor.undo(out)
+
+        yield timestamp, out
+
+        for preprocessor in self.preprocessors:
+            preprocessor.do(out)
 
         for type_, timestamp, patch in it:
             assert type_ == "patch"
 
-            jsonpatch.JsonPatch(patch).apply(base_data, in_place=True)
-            yield timestamp, base_data
+            jsonpatch.JsonPatch(patch).apply(out, in_place=True)
+
+            for preprocessor in reversed(self.preprocessors):
+                preprocessor.undo(out)
+
+            yield timestamp, out
+
+            for preprocessor in self.preprocessors:
+                preprocessor.do(out)
 
     def iter_archive_raw(
         self,
