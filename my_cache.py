@@ -18,15 +18,19 @@ from pathlib import Path
 
 import bson
 import jsonpatch
+import jsonpath_ng
 import psutil
+import fs.base
 
 __all__ = [
     "CouldNotAcquireLockException",
     "FilePidLock",
     "Store",
     "FileSystemStore",
+    "FsStore",
     "DirtyFileSystemStore",
-    "Cache"
+    "JsonDictionarizer",
+    "Cache",
 ]
 
 log = logging.getLogger("Cache")
@@ -146,20 +150,121 @@ class FileSystemStore:
         return (f.name for f in self.path.iterdir())
 
 
+@dataclasses.dataclass
+class FsStore:
+    fs: fs.base.FS
+
+    def save_file(self, filename: str, content: bytes):
+        self.fs.writebytes(filename, content)
+
+    def read_file(self, filename: str) -> bytes:
+        return self.fs.readbytes(filename)
+
+    def iterdir(self):
+        return self.fs.listdir("/")
+
+    @classmethod
+    def from_url(cls, url: str):
+        return cls(fs.open_fs(url))
+
+
 class DirtyFileSystemStore(FileSystemStore):
     def save_file(self, filename: str, content: bytes):
         with contextlib.suppress(OSError):
             super().save_file(filename, content)
 
 
+class Preprocessor(typing.Protocol):
+    def do(self, data: dict) -> dict:
+        ...
+
+    def undo(self, data: dict) -> dict:
+        ...
+
+
 @dataclasses.dataclass
-class Cache:
+class JsonDictionarizer:
+    rules: list[tuple[str, str]]
+    rules_parsed: list[tuple[jsonpath_ng.JSONPath, str]] = dataclasses.field(init=False)
+
+    def __post_init__(self):
+        self.rules_parsed = [(jsonpath_ng.parse(jsonpath), key_field) for jsonpath, key_field in self.rules]
+
+    def do(self, data):
+        """
+        :param rules: A list of (JSONPath, key_field) tuples.
+                      For each tuple:
+                        - JSONPath is used to find an array in `data`.
+                        - key_field is the property name to use as the dict key.
+        :param data:  The dictionary to transform in-place.
+        :return:      The same dictionary `data` with matched arrays replaced by dicts.
+        """
+        for jsonpath_expr, key_field in self.rules_parsed:
+            matches = jsonpath_expr.find(data)
+
+            for match in matches:
+                array_val = match.value
+
+                if isinstance(array_val, list):
+                    keyed_dict = {str(item[key_field]): item for item in array_val}
+
+                    match.path.update(match.context.value, keyed_dict)
+
+        return data
+
+    def undo(self, data):
+        """
+        :param rules: A list of (JSONPath, key_field) tuples.
+                      For each tuple:
+                        - JSONPath indicates where in `data` we expect to find a dict
+                          that was previously an array keyed by key_field.
+                        - key_field is the property name that was used as the dict key.
+        :param data:  The dictionary to transform in-place.
+        :return:      The same dictionary `data` with matched dicts replaced by arrays of objects.
+
+        For each match:
+          1) We assume the matched value is a dict of shape {key_field_value: item_dict, ...}.
+          2) Convert that dict into a list of item_dicts,
+             ensuring item_dict[key_field] = key_field_value.
+        """
+
+        for jsonpath_expr, key_field in self.rules_parsed:
+            matches = jsonpath_expr.find(data)
+
+            for match in matches:
+                dict_val = match.value
+
+                # If the matched value is a dict, we assume it was originally an array
+                # keyed by `key_field`.
+                if isinstance(dict_val, dict):
+                    array_val = []
+                    for dict_key, item in dict_val.items():
+                        # # Ensure each item has the key_field property set to dict_key
+                        # if key_field not in item or item[key_field] != dict_key:
+                        #     item[key_field] = dict_key
+                        array_val.append(item)
+
+                    # Replace the dict in the original structure with the new array
+                    match.path.update(match.context.value, array_val)
+
+        return data
+
+
+@dataclasses.dataclass
+class Cache[* T]:
     file_path: Path
-    data_store: Store
+    data_store_factory: tuple[typing.Callable[[*T], Store], tuple[*T]]
     executor: concurrent.futures.Executor
     last_known_timestamp: datetime.datetime | None = None
     base_file_creation_interval: int = 30 * 60
     lock: multiprocessing.Lock = dataclasses.field(init=False, default_factory=multiprocessing.Lock)
+    future_wait_executor: concurrent.futures.ThreadPoolExecutor = dataclasses.field(
+        init=False,
+        default_factory=lambda: concurrent.futures.ThreadPoolExecutor(),
+    )
+    preprocessors: list[Preprocessor] = dataclasses.field(default_factory=list)
+
+    _data_store: Store | None = dataclasses.field(init=False, default=None)
 
     def init(self):
         self.acquire_cache_lock()
@@ -180,7 +285,21 @@ class Cache:
                 continue
 
             log.info(f"Recovering lost compression task at {folder!s}.")
-            self.executor.submit(self._compress_folder, folder=folder, store=self.data_store)
+            fut = self.executor.submit(self._compress_folder, folder=folder, store_factory=self.data_store_factory,
+                                       preprocessors=self.preprocessors)
+            self.future_wait_executor.submit(
+                self._wait_for_compression_task,
+                future=fut,
+            )
+
+    @staticmethod
+    def _wait_for_compression_task(future: concurrent.futures.Future):
+        try:
+            future.result()
+        except Exception:
+            log.error("Compression task failed.", exc_info=True)
+        else:
+            log.info("Compression task finished successfully.")
 
     def save_base_file(self, timestamp: datetime.datetime, content: dict):
         if (self.file_path / "current" / "base_timestamp.txt").exists():
@@ -237,21 +356,20 @@ class Cache:
 
         (self.file_path / "current").rename(target_path)
 
-        self.executor.submit(self._compress_folder, folder=target_path, store=self.data_store)
-
-    @classmethod
-    def _compress_folder(cls, *args, **kwargs):
-        try:
-            return cls.__compress_folder(*args, **kwargs)
-        except Exception:
-            log.critical("Exception in %s.", cls.__compress_folder.__qualname__, exc_info=True)
-            raise
+        fut = self.executor.submit(self._compress_folder, folder=target_path, store_factory=self.data_store_factory,
+                                   preprocessors=self.preprocessors)
+        self.future_wait_executor.submit(
+            self._wait_for_compression_task,
+            future=fut,
+        )
 
     @staticmethod
-    def __compress_folder(folder: Path, store: Store):
+    def _compress_folder(folder: Path, store_factory: tuple[typing.Callable[[], Store], tuple],
+                         preprocessors: list[Preprocessor]):
         logger = log.getChild(folder.stem)
 
         logger.debug("Starting compression task at %s.", folder)
+        store = store_factory[0](*store_factory[1])
 
         t1 = time.perf_counter()
         n_files = 1
@@ -260,7 +378,12 @@ class Cache:
         base_timestamp = datetime.datetime.fromisoformat((folder / "base_timestamp.txt").read_text())
 
         base_file = (folder / "base.bson").read_bytes()
-        prev_file = bson.loads(base_file)
+
+        base_file_data = bson.loads(base_file)
+        for preprocessor in preprocessors:
+            base_file_data = preprocessor.do(base_file_data)
+
+        prev_file = base_file_data
 
         filename = base_timestamp.strftime("%Y-%m-%dT%H-%M-%S") + ".tar.gz"
         logger.info("Compressing to %s.", filename)
@@ -282,22 +405,30 @@ class Cache:
                 return
 
         file_io = io.BytesIO()
+        files = list(folder.iterdir())
         with tarfile.open(fileobj=file_io, mode="w:gz") as tar:
-            for file in sorted(folder.iterdir(), key=lambda s: s.name):
+            for i, file in enumerate(sorted(files, key=lambda s: s.name)):
+                logger.debug(f"-> %s (%s/%s)", file.name, i + 1, len(files))
                 # print(f"-> file {file!s}")
                 if file.name == "base_timestamp.txt":
                     continue
                 elif file.name == "base.bson":
                     # print("-> storing base")
+                    data = bson.dumps(base_file_data)
+
                     tarinfo = tarfile.TarInfo(file.name)
-                    tarinfo.size = len(base_file)
-                    tar.addfile(tarinfo, fileobj=io.BytesIO(base_file))
+                    tarinfo.size = len(data)
+                    tar.addfile(tarinfo, fileobj=io.BytesIO(data))
 
                     n_files += 1
                     total_data += len(base_file)
                 else:
                     # print("-> storing patch")
                     content = bson.loads(file.read_bytes())
+
+                    for preprocessor in preprocessors:
+                        content = preprocessor.do(content)
+
                     diff = jsonpatch.make_patch(prev_file, content)
                     diff_bson = bson.dumps({"": diff.patch})
                     tarinfo = tarfile.TarInfo(file.name)
@@ -349,7 +480,7 @@ class Cache:
     ) -> typing.Generator[tuple[str, datetime.datetime, dict], None, None]:
         base_timestamp = timestamp.astimezone(datetime.timezone.utc)
 
-        file = self.data_store.read_file(base_timestamp.strftime("%Y-%m-%dT%H-%M-%S") + ".tar.gz")
+        file = self._get_data_store().read_file(base_timestamp.strftime("%Y-%m-%dT%H-%M-%S") + ".tar.gz")
 
         with tarfile.open(fileobj=io.BytesIO(file), mode="r:gz") as tar:
             base_content = tar.extractfile("base.bson").read()
@@ -373,7 +504,8 @@ class Cache:
 
     def decompress(self, base_timestamp: datetime.datetime):
         for type_, timestamp, data in self.iter_archive_raw(base_timestamp):
-            out_filepath = self.file_path / base_timestamp.strftime("%Y-%m-%dT%H-%M-%S") / timestamp.strftime(
+            out_filepath = self.file_path / "decompressed" / base_timestamp.strftime(
+                "%Y-%m-%dT%H-%M-%S") / timestamp.strftime(
                 type_ + "-%Y-%m-%dT%H-%M-%S.json")
 
             out_filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -381,26 +513,34 @@ class Cache:
             with open(out_filepath, "w") as f:
                 json.dump(data, f)
 
-    def iter_files(
-        self,
-        since: datetime.datetime,
-        until: datetime.datetime
-    ) -> typing.Generator[tuple[datetime.datetime, dict], None, None]:
-        for file_name in self.data_store.iterdir():
+    def _get_data_store(self):
+        if self._data_store is None:
+            self._data_store = self.data_store_factory[0](*self.data_store_factory[1])
+
+        return self._data_store
+
+    def iter_base_files_timestamps(self):
+        for file_name in self._get_data_store().iterdir():
             try:
                 timestamp_str, _ = file_name.split(".", 1)
-                timestamp = datetime.datetime.strptime(
+                yield datetime.datetime.strptime(
                     timestamp_str, "%Y-%m-%dT%H-%M-%S"
                 ).replace(tzinfo=datetime.timezone.utc)
             except ValueError:
                 print(f"Cache data dir contains invalid file {file_name!s}. Skipping.")
                 continue
 
+    def iter_files(
+        self,
+        since: datetime.datetime,
+        until: datetime.datetime
+    ) -> typing.Generator[tuple[datetime.datetime, dict], None, None]:
+        for timestamp in self.iter_base_files_timestamps():
             if since < timestamp < until:
                 try:
                     yield from self.iter_archive(timestamp)
                 except (tarfile.ReadError, EOFError):
-                    print(f"Could not read file {file_name!s}. Skipping.")
+                    print(f"Could not read archive for {timestamp!s}. Skipping.")
 
 
 def main():

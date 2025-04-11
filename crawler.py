@@ -23,18 +23,22 @@ class NextBikeCrawler:
     cache: Cache
     base_timestamp: datetime.datetime | None = None
     wait_interval: int = 10
+    save_executor: concurrent.futures.ThreadPoolExecutor = dataclasses.field(
+        default_factory=lambda: concurrent.futures.ThreadPoolExecutor()
+    )
 
     def update(self, crawl_time: datetime.datetime, session: requests.Session):
         log.info(f"Fetching data for {crawl_time}")
         t1 = time.perf_counter()
         response = session.get('https://maps.nextbike.net/maps/nextbike-live.json', headers={'Accept-Encoding': 'gzip'})
         log.info(f"fetched ({time.perf_counter() - t1:.2f} s)")
-        self.cache.save_file(crawl_time, response.json())
+        # self.cache.save_file(crawl_time, response.json())
+        self.save_executor.submit(self.cache.save_file, crawl_time, response.json())
         log.info(f"saved {crawl_time}")
 
     def wait_until_next_update(self) -> datetime.datetime:
         next_time = (time.time() // self.wait_interval + 1) * self.wait_interval
-        log.debug(f"waiting {next_time - time.time():.1f} s")
+        log.debug(f"waiting {next_time - time.time():.1f} s")  # TODO: how many skipped?
         time.sleep(next_time - time.time())
         return datetime.datetime.fromtimestamp(next_time, datetime.timezone.utc)
 
@@ -55,14 +59,25 @@ def main():
     logging.getLogger("charset_normalizer").setLevel(logging.CRITICAL)
     logging.getLogger("charset_normalizer").propagate = False
 
-    store_type = DirtyFileSystemStore if bool(os.getenv("USE_DIRTY_STORE", False)) else FileSystemStore
+    rules = [
+        ("$.countries[*].cities[*].places[*].bike_list", "number"),
+        ("$.countries[*].cities[*].places", "uid"),
+        ("$.countries[*].cities", "uid"),
+        ("$.countries", "name"),
+    ]
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=int(os.getenv("MAX_WORKERS", None))) as executor:
         cache = Cache(
             file_path=Path(os.getenv("CACHE_PATH", "cache")),
             executor=executor,
-            data_store=DirtyFileSystemStore(Path(os.getenv("DATA_STORE_PATH", "cache/data"))),
+            data_store_factory=(
+                FsStore.from_url,
+                (os.getenv("CACHE_FS_URL"),)
+            ),
             base_file_creation_interval=int(os.getenv("BASE_FILE_CREATION_INTERVAL", 30 * 60)),
+            preprocessors=[
+                JsonDictionarizer(rules)
+            ]
         )
         cache.init()
 
