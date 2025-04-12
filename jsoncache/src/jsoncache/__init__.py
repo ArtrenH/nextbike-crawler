@@ -17,7 +17,7 @@ import time
 import typing
 from pathlib import Path
 
-# import jsonpatch
+import jsonpatch
 import jsonpath_ng
 import orjson
 import psutil
@@ -503,17 +503,23 @@ class Cache[* T]:
 
         yield timestamp, out_dict
 
+        for preprocessor in reversed(self.preprocessors):
+            preprocessor.do(out_dict)
+
         for type_, timestamp, patch in it:
             assert type_ == "patch"
 
-            # jsonpatch.JsonPatch(patch).apply(out, in_place=True)
-            out = fastjsonpatch.apply_patch(out, patch)
+            jsonpatch.JsonPatch(orjson.loads(patch)).apply(out_dict, in_place=True)
+            # out = fastjsonpatch.apply_patch(out, patch)
 
-            out_dict = orjson.loads(out)
+            # out_dict = orjson.loads(out)
             for preprocessor in reversed(self.preprocessors):
                 preprocessor.undo(out_dict)
 
             yield timestamp, out_dict
+
+            for preprocessor in reversed(self.preprocessors):
+                preprocessor.do(out_dict)
 
     def iter_archive_raw(
         self,
