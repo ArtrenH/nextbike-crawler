@@ -11,7 +11,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-from my_cache import *
+from jsoncache import *
 
 load_dotenv()
 

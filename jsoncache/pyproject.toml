@@ -1,0 +1,30 @@
+[project]
+name = "jsoncache"
+version = "0.0.1"
+#authors = [
+#  { name="Example Author", email="author@example.com" },
+#]
+#description = "A small example package"
+requires-python = ">=3.12"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "bson~=0.5.10",
+    "requests~=2.32.3",
+#    "jsonpatch~=1.33",
+    "folium~=0.17.0",
+    "tqdm~=4.66.5",
+    "psutil~=6.0.0",
+    "python-dotenv~=1.0.1",
+    "fs",
+    "jsonpath-ng",
+#    "deepdiff[optimize]",
+#    "python-bsonjs",
+    "orjson",
+    "fastjsonpatch",
+]
+#license = "MIT"
+#license-files = ["LICEN[CS]E*"]
+

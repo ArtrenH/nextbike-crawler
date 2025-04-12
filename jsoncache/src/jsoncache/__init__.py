@@ -17,11 +17,12 @@ import time
 import typing
 from pathlib import Path
 
-import bson
-import jsonpatch
+# import jsonpatch
 import jsonpath_ng
+import orjson
 import psutil
 import fs.base
+import fastjsonpatch
 
 __all__ = [
     "CouldNotAcquireLockException",
@@ -280,8 +281,8 @@ class Cache[* T]:
             if not folder.is_dir():
                 log.error(f"Unexpected file in compression folder: {folder!s}")
                 continue
-            if not ((folder / "base_timestamp.txt").exists() and (folder / "base.bson").exists()):
-                log.error(f"Missing base.bson or base_timestamp.txt in {folder!s}.")
+            if not ((folder / "base_timestamp.txt").exists() and (folder / "base.json").exists()):
+                log.error(f"Missing base.json or base_timestamp.txt in {folder!s}.")
                 continue
 
             log.info(f"Recovering lost compression task at {folder!s}.")
@@ -309,19 +310,22 @@ class Cache[* T]:
         folder_path = self.file_path / "current"
 
         folder_path.mkdir(parents=True, exist_ok=True)
-        filename = "base.bson"
+        filename = "base.json"
 
-        (folder_path / filename).write_bytes(bson.dumps(content))
+        (folder_path / filename).write_bytes(orjson.dumps(content))
         (self.file_path / "current" / "base_timestamp.txt").write_text(
             timestamp.astimezone(datetime.timezone.utc).isoformat()
         )
+        log.debug("..done.")
 
     def save_diff_file(self, timestamp: datetime.datetime, content: dict):
         log.info("saving patch file.")
 
-        filename = timestamp.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H-%M-%S") + ".bson"
+        filename = timestamp.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H-%M-%S") + ".json"
 
-        (self.file_path / "current" / filename).write_bytes(bson.dumps(content))
+        (self.file_path / "current" / filename).write_bytes(orjson.dumps(content))
+
+        log.debug("..done.")
 
     def save_file(self, timestamp: datetime.datetime, content: dict):
         log.debug("save_file: acquiring lock.")
@@ -377,13 +381,13 @@ class Cache[* T]:
 
         base_timestamp = datetime.datetime.fromisoformat((folder / "base_timestamp.txt").read_text())
 
-        base_file = (folder / "base.bson").read_bytes()
+        base_file = (folder / "base.json").read_bytes()
 
-        base_file_data = bson.loads(base_file)
+        base_file_data = orjson.loads(base_file)
         for preprocessor in preprocessors:
             preprocessor.do(base_file_data)
 
-        prev_file = base_file_data
+        prev_file: str = json.dumps(base_file_data)
 
         filename = base_timestamp.strftime("%Y-%m-%dT%H-%M-%S") + ".tar.gz"
         logger.info("Compressing to %s.", filename)
@@ -412,9 +416,9 @@ class Cache[* T]:
                 # print(f"-> file {file!s}")
                 if file.name == "base_timestamp.txt":
                     continue
-                elif file.name == "base.bson":
+                elif file.name == "base.json":
                     # print("-> storing base")
-                    data = bson.dumps(base_file_data)
+                    data = orjson.dumps(base_file_data)
 
                     tarinfo = tarfile.TarInfo(file.name)
                     tarinfo.size = len(data)
@@ -424,20 +428,47 @@ class Cache[* T]:
                     total_data += len(base_file)
                 else:
                     # print("-> storing patch")
-                    content = bson.loads(file.read_bytes())
+                    t1 = time.perf_counter()
+                    file_bytes = file.read_bytes()
 
+                    t2 = time.perf_counter()
+                    content = orjson.loads(file_bytes)
+
+                    t3 = time.perf_counter()
                     for preprocessor in preprocessors:
                         preprocessor.do(content)
 
-                    diff = jsonpatch.make_patch(prev_file, content)
-                    diff_bson = bson.dumps({"": diff.patch})
+                    t4 = time.perf_counter()
+                    # diff = jsonpatch.make_patch(prev_file, content)
+                    # diff_bson = orjson.dumps({"": diff.patch})
+
+                    content_dumped = json.dumps(content)
+                    diff = fastjsonpatch.compute_patch(prev_file, content_dumped)
+                    prev_file = content_dumped
+
+                    t5 = time.perf_counter()
+                    # diff_dumped = orjson.dumps({"": diff})
+                    diff_dumped = diff.encode("utf-8")
+
+                    t6 = time.perf_counter()
                     tarinfo = tarfile.TarInfo(file.name)
-                    tarinfo.size = len(diff_bson)
-                    tar.addfile(tarinfo, fileobj=io.BytesIO(diff_bson))
-                    prev_file = content
+                    tarinfo.size = len(diff_dumped)
+                    tar.addfile(tarinfo, fileobj=io.BytesIO(diff_dumped))
 
                     n_files += 1
-                    total_data += len(diff_bson)
+                    total_data += len(diff_dumped)
+
+                    t7 = time.perf_counter()
+                    logger.debug(
+                        f"\n"
+                        f"Read: {t2 - t1:.2f} s, \n"
+                        f"Load: {t3 - t2:.2f} s, \n"
+                        f"Preprocess: {t4 - t3:.2f} s, \n"
+                        f"Diff: {t5 - t4:.2f} s, \n"
+                        # f"Dump: {t6 - t5:.2f} s, \n"
+                        f"Store: {t7 - t6:.2f} s, \n"
+                        f"Total: {t7 - t1:.2f} s"
+                    )
 
         duration = time.perf_counter() - t1
         logger.info(
@@ -466,42 +497,39 @@ class Cache[* T]:
         type_, timestamp, out = next(it)
         assert type_ == "base"
 
+        out_dict = orjson.loads(out)
         for preprocessor in reversed(self.preprocessors):
-            preprocessor.undo(out)
+            preprocessor.undo(out_dict)
 
-        yield timestamp, out
-
-        for preprocessor in self.preprocessors:
-            preprocessor.do(out)
+        yield timestamp, out_dict
 
         for type_, timestamp, patch in it:
             assert type_ == "patch"
 
-            jsonpatch.JsonPatch(patch).apply(out, in_place=True)
+            # jsonpatch.JsonPatch(patch).apply(out, in_place=True)
+            out = fastjsonpatch.apply_patch(out, patch)
 
+            out_dict = orjson.loads(out)
             for preprocessor in reversed(self.preprocessors):
-                preprocessor.undo(out)
+                preprocessor.undo(out_dict)
 
-            yield timestamp, out
-
-            for preprocessor in self.preprocessors:
-                preprocessor.do(out)
+            yield timestamp, out_dict
 
     def iter_archive_raw(
         self,
         timestamp: datetime.datetime
-    ) -> typing.Generator[tuple[str, datetime.datetime, dict], None, None]:
+    ) -> typing.Generator[tuple[str, datetime.datetime, str], None, None]:
         base_timestamp = timestamp.astimezone(datetime.timezone.utc)
 
         file = self._get_data_store().read_file(base_timestamp.strftime("%Y-%m-%dT%H-%M-%S") + ".tar.gz")
 
         with tarfile.open(fileobj=io.BytesIO(file), mode="r:gz") as tar:
-            base_content = tar.extractfile("base.bson").read()
-            base_file = bson.loads(base_content)
-            yield "base", base_timestamp, base_file
+            base_content = tar.extractfile("base.json").read().decode("utf-8")
+            # base_file = orjson.loads(base_content)
+            yield "base", base_timestamp, base_content
 
             for file in sorted(tar.getmembers(), key=lambda m: m.name):
-                if file.name == "base.bson":
+                if file.name == "base.json":
                     continue
 
                 timestamp_str, _ = file.name.split(".")
@@ -510,10 +538,11 @@ class Cache[* T]:
                     tzinfo=datetime.timezone.utc)
 
                 with tar.extractfile(file) as f:
-                    file_content = f.read()
-                    json_patch = list(bson.loads(file_content).values())[0]
+                    file_content = f.read().decode("utf-8")
+                    # json_patch = list(orjson.loads(file_content).values())[0]
+                    # json_patch = orjson.loads(file_content)
 
-                    yield "patch", timestamp, json_patch
+                    yield "patch", timestamp, file_content
 
     def decompress(self, base_timestamp: datetime.datetime):
         for type_, timestamp, data in self.iter_archive_raw(base_timestamp):
@@ -523,8 +552,7 @@ class Cache[* T]:
 
             out_filepath.parent.mkdir(parents=True, exist_ok=True)
 
-            with open(out_filepath, "w") as f:
-                json.dump(data, f)
+            out_filepath.write_text(data)
 
     def _get_data_store(self):
         if self._data_store is None:
