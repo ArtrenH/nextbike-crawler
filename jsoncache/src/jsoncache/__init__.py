@@ -456,7 +456,7 @@ class Cache[* T]:
                     tar.addfile(tarinfo, fileobj=io.BytesIO(diff_dumped))
 
                     n_files += 1
-                    total_data += len(diff_dumped)
+                    total_data += len(file_bytes)
 
                     t7 = time.perf_counter()
                     logger.debug(
