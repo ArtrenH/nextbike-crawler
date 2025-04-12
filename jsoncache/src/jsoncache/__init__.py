@@ -376,7 +376,7 @@ class Cache[* T]:
         store = store_factory[0](*store_factory[1])
 
         t1 = time.perf_counter()
-        n_files = 1
+        n_files = 0
         total_data = 0
 
         base_timestamp = datetime.datetime.fromisoformat((folder / "base_timestamp.txt").read_text())
