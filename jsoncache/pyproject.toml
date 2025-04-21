@@ -18,12 +18,12 @@ dependencies = [
     "tqdm~=4.66.5",
     "psutil~=6.0.0",
     "python-dotenv~=1.0.1",
-    "fs",
+    "fsspec[sftp]",
     "jsonpath-ng",
-#    "deepdiff[optimize]",
-#    "python-bsonjs",
+    "universal_pathlib",
     "orjson",
     "fastjsonpatch",
+    "pipifax-io@git+https://github.com/Belissimo-T/pipifax-modules.git/#subdirectory=pipifax-io",
 ]
 #license = "MIT"
 #license-files = ["LICEN[CS]E*"]

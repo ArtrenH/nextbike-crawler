@@ -10,7 +10,9 @@ from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
+from upath import UPath
 
+from jsoncache.preprocessors import *
 from jsoncache import *
 
 load_dotenv()
@@ -20,7 +22,7 @@ log = logging.getLogger("NextBikeCrawler")
 
 @dataclasses.dataclass
 class NextBikeCrawler:
-    cache: Cache
+    cache: JsonCache
     base_timestamp: datetime.datetime | None = None
     wait_interval: int = 10
     save_executor: concurrent.futures.ThreadPoolExecutor = dataclasses.field(
@@ -66,18 +68,23 @@ def main():
         ("$.countries", "name"),
     ]
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=int(os.getenv("MAX_WORKERS", None))) as executor:
-        cache = Cache(
-            file_path=Path(os.getenv("CACHE_PATH", "cache")),
-            executor=executor,
-            data_store_factory=(
-                FsStore.from_url,
-                (os.getenv("CACHE_FS_URL"),)
+    with (
+        concurrent.futures.ProcessPoolExecutor(max_workers=int(os.getenv("MAX_WORKERS", None))) as compression_executor,
+        concurrent.futures.ThreadPoolExecutor() as future_wait_executor
+    ):
+        cache = JsonCache(
+            writable_json_store=WritableJsonStore(
+                json_store=JsonStore(
+                    data_store=UPath(os.getenv("CACHE_FS_URL")),
+                    preprocessors=[
+                        JsonDictionarizer(rules)
+                    ]
+                ),
+                cache_dir_path=Path(os.getenv("CACHE_PATH", "cache")),
+                executor=compression_executor
             ),
+            future_wait_executor=future_wait_executor,
             base_file_creation_interval=int(os.getenv("BASE_FILE_CREATION_INTERVAL", 30 * 60)),
-            preprocessors=[
-                JsonDictionarizer(rules)
-            ]
         )
         cache.init()
 

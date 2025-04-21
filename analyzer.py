@@ -1,136 +1,155 @@
 import dataclasses
 import datetime
 import itertools
-import json
+import logging
+import os
+import pickle
+import typing, math
 from collections import defaultdict
+from concurrent.futures.process import ProcessPoolExecutor
 from pathlib import Path
 
 import folium
-from folium.plugins import HeatMap
+import numpy as np
 from folium.plugins import HeatMapWithTime
 from tqdm import tqdm
+from dotenv import load_dotenv
+from upath import UPath
 
-from cache import *
+import pipifax_io.cache
+import pipifax_io.serializable
+import pipifax_io.dyn_codegen
+
+load_dotenv()
+
+from jsoncache import *
 
 
-@dataclasses.dataclass
-class DataAnalyzer:
-    timestamp: datetime.datetime | None = None
-    # cache: Cache | None = None
-    data: dict | None = None
-    bike_locations: dict = dataclasses.field(default_factory=dict)
+def get_bike_locations(
+    data,
+    country_whitelist: typing.Container[str] | None = None
+) -> dict[str, dict[str, list[float]]]:
+    bike_locations = defaultdict(dict)
 
-    def load_data(self):
-        ...
+    for country_id, country in data['countries'].items():
+        if country_whitelist and country_id not in country_whitelist:
+            continue
 
-    def read_data(self):
-        with open("nextbike-live.json", "r") as file:
-            self.data = json.load(file)
+        for city in country["cities"].values():
+            for place in city["places"].values():
+                for bike in place['bike_list'].values():
+                    bike_locations[country_id][bike['number']] = [place['lat'], place['lng']]
 
-    @staticmethod
-    def get_bike_locations(data) -> dict[str, dict[str, list[float]]]:
-        bike_locations = {}
-        for country in data['countries']:
-            country_id = country['name']
-            if bike_locations.get(country_id) is None:
-                bike_locations[country_id] = {}
-            for city in country["cities"]:
-                for place in city["places"]:
-                    lat, lon = place['lat'], place['lng']
-                    for bike in place['bike_list']:
-                        bike_locations[country_id][bike['number']] = [lat, lon]
-        return bike_locations
+    return bike_locations
 
-    def save_bike_locations(self):
-        with open("bike_locations.json", "w") as file:
-            json.dump(self.bike_locations, file)
 
-    def plot_locations(self, city: str):
-        markers = list(self.bike_locations[city].keys())
-        locations = list(self.bike_locations[city].values())
-        # make a folium map
-        center_lat = sum(loc[0] for loc in locations) / len(locations)
-        center_lon = sum(loc[1] for loc in locations) / len(locations)
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=15)
-        # for location, marker_text in zip(locations, markers):
-        #     folium.Marker(
-        #         location=location,
-        #         popup=folium.Popup(marker_text, parse_html=True),
-        #         icon=folium.Icon(color='red', icon='info-sign')
-        #     ).add_to(m)
+@dataclasses.dataclass(frozen=True, slots=True)
+class Trip(pipifax_io.serializable.SimpleSerializable):
+    lat1: float
+    lon1: float
+    lat2: float
+    lon2: float
+    begin: datetime.datetime
+    end: datetime.datetime
+    bike_nr: str
 
-        HeatMap(
-            locations,
-            radius=7.5,
-            min_opacity=1
-        ).add_to(m)
+    def duration(self) -> datetime.timedelta:
+        return self.end - self.begin
 
-        # Save the map to an HTML file
-        m.save("locations_map.html")
 
-    def animate_locations(self):
-        cache = Cache(
-            file_path=Path("cache"),
-            executor=None,
-            data_store=FileSystemStore(Path("cache/data"))
+# @pipifax_io.cache.cache(
+#     key=pipifax_io.cache.make_key_func(
+#         ext=".pickle"
+#     ),
+#     serialize=pickle.dumps,
+#     deserialize=pickle.loads,
+# )
+@pipifax_io.cache.cache_auto(
+    version=5
+)
+def get_trips(
+    since: datetime.datetime,
+    until: datetime.datetime,
+    country: str
+) -> list[Trip]:
+    cache = JsonStore(
+        data_store=UPath(os.getenv("CACHE_FS_URL_ANALYZER")),
+        preprocessors=[]
+    )
+
+    with ProcessPoolExecutor(11) as executor:
+        iterable = cache.iter_files(
+            since=since,
+            until=until,
+            executor=executor
         )
-
-        iterable = cache.iter_archive(datetime.datetime.strptime("2024-08-26T17-30-00", "%Y-%m-%dT%H-%M-%S").replace(tzinfo=datetime.timezone.utc))
-        # iterable = cache.iter_files(since=datetime.datetime.min.replace(tzinfo=datetime.timezone.utc), until=datetime.datetime.max.replace(tzinfo=datetime.timezone.utc))
+        bikes: dict[str, tuple[int, float, float]] = {}
         timestamps = []
+        trips = []
 
-        bikes = defaultdict(list)
-        for i, (timestamp, data) in tqdm(enumerate(iterable), total=180*4):
-            country_bikes = self.get_bike_locations(data)['nextbike Leipzig']
+        try:
+            for i, (timestamp, data) in tqdm(enumerate(iterable), total=len(iterable), smoothing=0):
+                country_bikes = get_bike_locations(data, {country})[country]
 
-            for bike_nr, pos in country_bikes.items():
-                bikes[bike_nr].append((i, timestamp, pos))
+                timestamps.append(timestamp)
 
-            timestamps.append(timestamp)
+                for bike_nr, (lat, lon) in country_bikes.items():
+                    if bike_nr in bikes:
+                        prev_i, lat1, lon1 = bikes[bike_nr]
+                        if i - prev_i > 1:
+                            trips.append(
+                                Trip(
+                                    lat1=lat1,
+                                    lon1=lon1,
+                                    lat2=lat,
+                                    lon2=lon,
+                                    begin=timestamps[prev_i],
+                                    end=timestamp,
+                                    bike_nr=bike_nr
+                                )
+                            )
+                            # print(trips[-1])
 
-            # if i == 10:
-            #     break
+                    bikes[bike_nr] = (i, lat, lon)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+            iterable.close()
 
-        bikes_interpolated: dict[str, dict[int, list[float]]] = {}
-        for bike_nr, bike_positions in bikes.items():
-            new_positions: dict[int, list[float]] = {}
-            for (i1, t1, p1), (i2, t2, p2) in itertools.pairwise(bike_positions):
-                for di in range(0, i2 - i1 + 1):
-                    px = p1[0] + di / (i2 - i1) * (p2[0] - p1[0])
-                    py = p1[1] + di / (i2 - i1) * (p2[1] - p1[1])
-                    new_positions[i1 + di] = [px, py]
-
-            bikes_interpolated[bike_nr] = new_positions
-
-        _plot_data: dict[int, list[list[float]]] = defaultdict(list)
-        for bike_data in bikes_interpolated.values():
-            for i, pos in bike_data.items():
-                _plot_data[i].append(pos)
-
-        plot_data = [_plot_data[i] for i in range(max(_plot_data))]
-        timestamp_index = [timestamps[i].isoformat() for i in range(max(_plot_data))]
-
-        m = folium.Map()
-        HeatMapWithTime(plot_data, auto_play=True, max_opacity=0.8, index=timestamp_index).add_to(m)
-        m.save("animated_heatmap.html")
+    return trips
 
 
 def main():
-    cache = Cache(
-        file_path=Path("cache"),
-        executor=None,
-        data_store=FileSystemStore(Path("cache/data"))
-    )
-    # cache.decompress(datetime.datetime.strptime("2024-08-24T18-30-00", "%Y-%m-%dT%H-%M-%S").replace(tzinfo=datetime.timezone.utc))
-    # return
-    d = DataAnalyzer()
-    d.animate_locations()
-    return
-    d.read_data()
-    d.get_bike_locations()
-    d.plot_locations("WK-Bike (Bremen)")
-    # d.save_bike_locations()
+    # os.nice(30)
 
+    logging.basicConfig(level=logging.DEBUG, format="[%(asctime)s] [%(levelname)8s] %(name)s: %(message)s",
+                        datefmt="%Y-%m-%d %H:%M:%S", force=True)
+    logging.getLogger("fsspec").setLevel(logging.WARN)
+
+    data = get_trips(
+        country="nextbike Leipzig",
+
+        # since=datetime.datetime.min.replace(tzinfo=datetime.timezone.utc),
+        # until=datetime.datetime.max.replace(tzinfo=datetime.timezone.utc),
+        since=datetime.datetime.strptime("2025-04-17T00-00-00", "%Y-%m-%dT%H-%M-%S").replace(
+            tzinfo=datetime.timezone.utc),
+        until=datetime.datetime.strptime("2025-04-19T00-00-00", "%Y-%m-%dT%H-%M-%S").replace(
+            tzinfo=datetime.timezone.utc),
+
+        # __disable_cache_lookup=True
+    )
+
+    # print(len(data))
+
+    # out(data)
+    # return
+
+    m = generate_heatmap(data)
+    m.save("animated_heatmap.html")
 
 if __name__ == "__main__":
-    main()
+    with pipifax_io.cache.set_simple_cache(
+        pipifax_io.cache.FileSystemCache(
+            Path(".pipifax-cache")
+        )
+    ):
+        main()

@@ -1,6 +1,8 @@
 import os
-from datetime import datetime
+import datetime
 from pathlib import Path
+
+from upath import UPath
 
 from jsoncache import *
 from dotenv import load_dotenv
@@ -20,28 +22,27 @@ def main():
         ("$.countries", "name"),
     ]
 
-    cache = Cache(
-        file_path=Path(os.getenv("CACHE_PATH", "cache")),
-        executor=None,
-        data_store_factory=(
-            FsStore.from_url,
-            (os.getenv("CACHE_FS_URL"),)
-        ),
-        base_file_creation_interval=int(os.getenv("BASE_FILE_CREATION_INTERVAL", 30 * 60)),
-        preprocessors=[
-            JsonDictionarizer(rules)
-        ]
+    cache = JsonStore(
+        data_store=UPath(os.getenv("CACHE_FS_URL_ANALYZER")),
+        preprocessors=[]
     )
 
     for timestamp in sorted(cache.iter_base_files_timestamps()):
         print(f" - {timestamp!s}")
 
-    t = datetime.fromisoformat("2025-04-12 12:35:00+00:00")
+    t = datetime.datetime.fromisoformat("2025-04-12 12:35:00+00:00")
     # cache.decompress(
     #     t
     # )
 
-    for timestamp, data in cache.iter_archive(t):
+    # for timestamp, data in cache.iter_archive(t):
+    #     print(timestamp)
+        # print(data)
+
+    for timestamp, data in cache.iter_files(
+        since=datetime.datetime.min.replace(tzinfo=datetime.timezone.utc),
+        until=datetime.datetime.max.replace(tzinfo=datetime.timezone.utc),
+    ):
         print(timestamp)
         # print(data)
 
