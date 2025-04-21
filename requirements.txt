@@ -1,2 +1,4 @@
 fastjsonpatch/
 jsoncache/
+pytz
+matplotlib
