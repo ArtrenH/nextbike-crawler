@@ -35,7 +35,15 @@ class NextBikeCrawler:
         response = session.get('https://maps.nextbike.net/maps/nextbike-live.json', headers={'Accept-Encoding': 'gzip'})
         log.info(f"fetched ({time.perf_counter() - t1:.2f} s)")
         # self.cache.save_file(crawl_time, response.json())
-        self.save_executor.submit(self.cache.save_file, crawl_time, response.json())
+
+        def run_save():
+            try:
+                self.cache.save_file(crawl_time, response.json())
+            except Exception:
+                logging.critical("Could not save fetched data!", exc_info=True)
+                raise
+
+        self.save_executor.submit(run_save)
         log.info(f"saved {crawl_time}")
 
     def wait_until_next_update(self) -> datetime.datetime:

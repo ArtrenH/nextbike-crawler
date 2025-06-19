@@ -195,15 +195,11 @@ class JsonStore:
         n_files = 0
         total_data = 0
 
-        base_timestamp = datetime.datetime.fromisoformat((folder / "base_timestamp.txt").read_text())
-
-        base_file = (folder / "base.json").read_bytes()
-
-        base_file_data = orjson.loads(base_file)
-        for preprocessor in self.preprocessors:
-            preprocessor.do(base_file_data)
-
-        prev_file: str = json.dumps(base_file_data)
+        try:
+            base_timestamp = datetime.datetime.fromisoformat((folder / "base_timestamp.txt").read_text())
+        except FileNotFoundError:
+            log.error(f"Missing base_timestamp.txt in {folder!s}.")
+            return
 
         filename = base_timestamp.strftime("%Y-%m-%dT%H-%M-%S") + ".tar.gz"
         logger.info("Compressing to %s.", filename)
@@ -223,6 +219,18 @@ class JsonStore:
                 shutil.rmtree(folder)
                 logger.info("Done. Deleted folder.")
                 return
+
+        try:
+            base_file = (folder / "base.json").read_bytes()
+        except FileNotFoundError:
+            logger.error(f"Missing base.json in {folder!s}.")
+            return
+
+        base_file_data = orjson.loads(base_file)
+        for preprocessor in self.preprocessors:
+            preprocessor.do(base_file_data)
+
+        prev_file: str = json.dumps(base_file_data)
 
         file_io = io.BytesIO()
         files = list(folder.iterdir())
@@ -297,8 +305,15 @@ class JsonStore:
             logger.info("Storing compressed file.")
             (self.data_store / filename).write_bytes(file_io.getvalue())
         except Exception:
-            logger.error("Could not store compressed file. Saving into compression task.")
+            logger.error("Could not store compressed file. Trying to save into compression task.")
+
             (folder / "compressed.tar.xz").write_bytes(file_io.getvalue())
+
+            logger.debug("Deleting json files.")
+            for file in folder.iterdir():
+                if file.name.endswith(".json"):
+                    file.unlink()
+
             raise
 
         shutil.rmtree(folder)
@@ -332,9 +347,6 @@ class WritableJsonStore:
         for folder in file_path.iterdir():
             if not folder.is_dir():
                 log.error(f"Unexpected file in compression folder: {folder!s}")
-                continue
-            if not ((folder / "base_timestamp.txt").exists() and (folder / "base.json").exists()):
-                log.error(f"Missing base.json or base_timestamp.txt in {folder!s}.")
                 continue
 
             log.info(f"Recovering lost compression task at {folder!s}.")
