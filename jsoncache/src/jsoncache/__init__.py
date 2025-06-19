@@ -191,7 +191,7 @@ class JsonStore:
 
         logger.debug("Starting compression task at %s.", folder)
 
-        t1 = time.perf_counter()
+        t0 = time.perf_counter()
         n_files = 0
         total_data = 0
 
@@ -294,7 +294,7 @@ class JsonStore:
                         f"Total: {t7 - t1:.2f} s"
                     )
 
-        duration = time.perf_counter() - t1
+        duration = time.perf_counter() - t0
         logger.info(
             f"Finished archive {filename!r}. "
             f"Took {duration:.2f} s for {n_files} files ({duration / n_files:.2f} s/file). "
