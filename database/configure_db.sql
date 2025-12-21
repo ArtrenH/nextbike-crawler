@@ -1,0 +1,88 @@
+-- PARKED BIKES
+CREATE TABLE IF NOT EXISTS bike_parking (
+    id SERIAL PRIMARY KEY,
+    bike_id TEXT NOT NULL,
+    start_time TIMESTAMP,
+    end_time   TIMESTAMP,
+    latitude   DOUBLE PRECISION NOT NULL,
+    longitude  DOUBLE PRECISION NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_bike_parking_bike_id
+    ON bike_parking (bike_id);
+    
+CREATE INDEX IF NOT EXISTS bike_parking_time_range_gist
+    ON bike_parking
+    USING GIST (tsrange(start_time, end_time, '[)'));
+
+
+TRUNCATE TABLE bike_parking RESTART IDENTITY;
+
+SELECT
+    bike_id,
+    COUNT(*) AS occurrences
+FROM
+    bike_parking
+GROUP BY
+    bike_id
+ORDER BY
+    occurrences DESC;   -- optional: sorts by most frequent first
+
+-- TRIPS
+CREATE TABLE IF NOT EXISTS bike_trips (
+    id SERIAL PRIMARY KEY,
+    bike_id TEXT NOT NULL,
+    start_time      TIMESTAMP,
+    end_time        TIMESTAMP,
+    start_latitude  DOUBLE PRECISION NOT NULL,
+    start_longitude DOUBLE PRECISION NOT NULL,
+    end_latitude    DOUBLE PRECISION NOT NULL,
+    end_longitude   DOUBLE PRECISION NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_bike_trips_bike_id
+    ON bike_trips (bike_id);
+    
+CREATE INDEX IF NOT EXISTS bike_trips_time_range_gist
+    ON bike_trips
+    USING GIST (tsrange(start_time, end_time, '[)'));
+
+TRUNCATE TABLE bike_trips RESTART IDENTITY;
+
+
+
+INSERT INTO bike_trips (
+    bike_id,
+    start_time,
+    end_time,
+    start_latitude,
+    start_longitude,
+    end_latitude,
+    end_longitude
+)
+WITH ordered AS (
+    SELECT
+        bike_id,
+        start_time,
+        end_time,
+        latitude,
+        longitude,
+        LEAD(start_time)  OVER (PARTITION BY bike_id ORDER BY start_time) AS next_start_time,
+        LEAD(latitude)    OVER (PARTITION BY bike_id ORDER BY start_time) AS next_latitude,
+        LEAD(longitude)   OVER (PARTITION BY bike_id ORDER BY start_time) AS next_longitude
+    FROM bike_parking
+    WHERE end_time IS NOT NULL
+)
+SELECT
+    bike_id::text,
+    end_time AS start_time,
+    next_start_time AS end_time,
+    latitude  AS start_latitude,
+    longitude AS start_longitude,
+    next_latitude  AS end_latitude,
+    next_longitude AS end_longitude
+FROM ordered
+WHERE next_start_time IS NOT NULL
+  AND next_start_time > end_time          -- only gaps (actual trips)
+  AND next_latitude IS NOT NULL
+  AND next_longitude IS NOT NULL;
