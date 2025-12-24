@@ -55,19 +55,9 @@ CREATE TABLE IF NOT EXISTS bikes (
     bike_type TEXT NOT NULL
 );
 
--- NOT ANYMORE (done via bike parkings)
-CREATE TABLE IF NOT EXISTS city_bikes (
-    city_id INTEGER NOT NULL REFERENCES cities(id) ON DELETE CASCADE,
-    bike_id INTEGER NOT NULL REFERENCES bikes(id) ON DELETE CASCADE,
-    PRIMARY KEY (city_id, bike_id)
-);
-
-CREATE INDEX IF NOT EXISTS city_bikes_bike_id_idx ON city_bikes(bike_id);
-
 
 -- Rückabwicklung:
 
-TRUNCATE TABLE city_bikes RESTART IDENTITY;
 TRUNCATE TABLE city_places RESTART IDENTITY;
 TRUNCATE TABLE bikes RESTART IDENTITY CASCADE ;
 TRUNCATE TABLE cities RESTART IDENTITY CASCADE ;

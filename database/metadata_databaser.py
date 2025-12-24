@@ -241,36 +241,22 @@ def extract_places(
             iterable.close()
 
 
-UPSERT_AND_LINK_BIKE_MANY_CITIES = """
-WITH upserted AS (
-  INSERT INTO bikes (local_id, bike_type)
-  VALUES (%s, %s)
-  ON CONFLICT (local_id) DO UPDATE SET
+UPSERT_BIKE = """
+INSERT INTO bikes (local_id, bike_type)
+VALUES (%s, %s)
+ON CONFLICT (local_id) DO UPDATE SET
     bike_type = EXCLUDED.bike_type
-  RETURNING id
-)
-INSERT INTO city_bikes (city_id, bike_id)
-SELECT unnest(%s::bigint[]), id
-FROM upserted
-ON CONFLICT DO NOTHING;
+RETURNING id
 """
 
 
 def insert_bikes(
     db_url: str = DATABASE_URL,
     records: Iterable[BikeRecord] = (),
-    bike_city_map: dict | None = None,
 ):
-    if bike_city_map is None:
-        bike_city_map = {}
-
     with psycopg.connect(db_url) as conn:
         with conn.cursor(row_factory=tuple_row) as cur:
-            params = [
-                (local_id, bike_type, sorted(bike_city_map.get(local_id, ())))
-                for (local_id, bike_type) in records
-            ]
-            cur.executemany(UPSERT_AND_LINK_BIKE_MANY_CITIES, params)
+            cur.executemany(UPSERT_BIKE, records)
         conn.commit()
 
 
@@ -283,10 +269,7 @@ def extract_bikes(
         data_store=UPath(os.getenv("CACHE_FS_URL_ANALYZER")), preprocessors=[]
     )
 
-    city_map = get_city_dict(DATABASE_URL)
-
     bike_data = {}
-    bike_city_data = {}
 
     with ProcessPoolExecutor(1) as executor:
         iterable = cache.iter_files(since=since, until=until, executor=executor)
@@ -303,19 +286,15 @@ def extract_bikes(
                 for country_local_id, country in data["countries"].items():
                     if country_whitelist and country_local_id not in country_whitelist:
                         continue
-                    for city_uid, city in country["cities"].items():
+                    for _, city in country["cities"].items():
                         for place in city["places"].values():
                             for bike in place["bike_list"].values():
                                 bike_data[bike["number"]] = (
                                     bike["number"],
                                     str(bike["bike_type"]),
                                 )
-                                if bike["number"] not in bike_city_data:
-                                    bike_city_data[bike["number"]] = set()
 
-                                bike_city_data[bike["number"]].add(city_map[city_uid])
-
-            insert_bikes(records=bike_data.values(), bike_city_map=bike_city_data)
+            insert_bikes(records=bike_data.values())
 
         finally:
             executor.shutdown(wait=False, cancel_futures=True)

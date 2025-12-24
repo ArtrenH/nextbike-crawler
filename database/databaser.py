@@ -13,6 +13,7 @@ from tqdm import tqdm
 from upath import UPath
 
 from database.helpers import is_bike_code
+from database.metadata_databaser import insert_bikes
 from jsoncache import *
 from jsoncache.build.lib.jsoncache import JsonStore
 
@@ -111,7 +112,7 @@ def get_standing_times(
                     place_uid,
                     city_uid,
                 ) in country_bikes.items():
-                    bikes[bike_id] = {"bike_id": bike_id, "bike_type": bike_type}
+                    bikes[bike_id] = (bike_id, bike_type)
                     missing.pop(bike_id, None)
 
                     if bike_id not in bike_positions:
@@ -268,7 +269,8 @@ def main():
         "nextbike Berlin",
     ]
     for country in country_whitelist:
-        trips = get_standing_times(since, until, [country], False)
+        bikes, trips = get_standing_times(since, until, [country], False)
+        insert_bikes("postgresql://localhost:5432/nextbike", bikes.values())
         insert_bike_records("postgresql://localhost:5432/nextbike", trips)
 
 
