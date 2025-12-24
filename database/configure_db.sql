@@ -1,16 +1,18 @@
 -- PARKED BIKES
 CREATE TABLE IF NOT EXISTS bike_parking (
     id SERIAL PRIMARY KEY,
-    bike_id TEXT NOT NULL,
+    bike_local_id TEXT NOT NULL REFERENCES bikes(local_id) ON DELETE SET NULL,
     start_time TIMESTAMP,
     end_time   TIMESTAMP,
     latitude   DOUBLE PRECISION NOT NULL,
-    longitude  DOUBLE PRECISION NOT NULL
+    longitude  DOUBLE PRECISION NOT NULL,
+    place_uid  TEXT NULL REFERENCES places(uid) ON DELETE SET NULL,
+    city_uid   TEXT NULL REFERENCES cities(uid) ON DELETE SET NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_bike_parking_bike_id
-    ON bike_parking (bike_id);
-    
+CREATE INDEX IF NOT EXISTS idx_bike_parking_bike_local_id
+    ON bike_parking (bike_local_id);
+
 CREATE INDEX IF NOT EXISTS bike_parking_time_range_gist
     ON bike_parking
     USING GIST (tsrange(start_time, end_time, '[)'));
