@@ -72,3 +72,16 @@ def get_country_city_dict(db_url: str):
         k: {city["uid"]: city["id"] for city in city_list if city["country_id"] == v}
         for k, v in country_dict.items()
     }
+
+
+def get_single_key(d: dict):
+    keys = list(d.keys())
+
+    if len(keys) == 1:
+        return keys[0]
+
+    if len(keys) == 2:
+        non_none = [k for k in keys if k is not None]
+        return non_none[0] if len(non_none) == 1 else None
+
+    return None

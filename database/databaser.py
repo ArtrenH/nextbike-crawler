@@ -12,7 +12,7 @@ from psycopg.rows import tuple_row
 from tqdm import tqdm
 from upath import UPath
 
-from database.helpers import is_bike_code
+from database.helpers import get_single_key, is_bike_code
 from database.metadata_databaser import insert_bikes
 from jsoncache import *
 from jsoncache.build.lib.jsoncache import JsonStore
@@ -65,6 +65,106 @@ def get_bike_locations(
     return bike_locations
 
 
+"""
+Class representing a collection of bike positions with interruptions < MAX_GAP_SECONDS
+"""
+
+
+class BikePositionCollection:
+    def __init__(
+        self,
+        bike_local_id: str,
+        start_t: datetime.datetime,
+        lat: float,
+        lon: float,
+        place_uid: str,
+        city_uid: str,
+    ):
+        self.bike_local_id: str = bike_local_id
+        self.start_t: datetime.datetime = start_t
+        self.last_seen_t: datetime.datetime = start_t
+        self.positions: dict[tuple[float, float], int] = {(lat, lon): 1}
+        self.place_uids: dict[str, int] = {place_uid: 1}
+        self.city_uids: dict[str, int] = {city_uid: 1}
+
+    # update how often each position occured
+    def update_position(
+        self,
+        t: datetime.datetime,
+        lat: float,
+        lon: float,
+        place_uid: str,
+        city_uid: str,
+    ):
+        self.last_seen_t = t
+        if (lat, lon) not in self.positions:
+            self.positions[(lat, lon)] = 0
+        if place_uid not in self.place_uids:
+            self.place_uids[place_uid] = 0
+        if city_uid not in self.city_uids:
+            self.city_uids[city_uid] = 0
+
+        self.positions[(lat, lon)] += 1
+        self.place_uids[place_uid] += 1
+        self.city_uids[city_uid] += 1
+
+    def compile_position_data(
+        self,
+    ) -> tuple[str | None, str | None, tuple[float, float]]:
+        return (
+            self.compile_city_uid(),
+            self.compile_place_uid(),
+            self.compile_position(),
+        )
+
+    def compile_city_uid(self) -> str | None:
+        return get_single_key(self.city_uids)
+
+    def compile_place_uid(self) -> str | None:
+        return get_single_key(self.place_uids)
+
+    # determine coordinate -> weighted average of >= 60% most occuring positions
+    def compile_position(self) -> tuple[float, float]:
+        items = sorted(self.positions.items(), key=lambda x: x[1], reverse=True)
+        total = sum(w for _, w in items)
+        selected = []
+        acc = 0
+        for (lat, lon), w in items:
+            selected.append((lat, lon, w))
+            acc += w
+            if acc >= 0.6 * total:
+                break
+        lat = sum(lat * w for lat, _, w in selected) / sum(w for *_, w in selected)
+        lon = sum(lon * w for _, lon, w in selected) / sum(w for *_, w in selected)
+        return lat, lon
+
+    def max_distance(self) -> float:
+        max_distance = 0
+        for pos1 in self.positions.keys():
+            for pos2 in self.positions.keys():
+                distance = haversine(
+                    pos1[0],
+                    pos1[1],
+                    pos2[0],
+                    pos2[1],
+                )
+                max_distance = max(max_distance, distance)
+        return max_distance
+
+    # compile the position collection into a standing time
+    def compile_standing_time(self):
+        final_position = self.compile_position()
+        return (
+            self.bike_local_id,
+            self.start_t,
+            self.last_seen_t,
+            final_position[0],
+            final_position[1],
+            self.compile_place_uid(),
+            self.compile_city_uid(),
+        )
+
+
 def get_standing_times(
     since: datetime.datetime,
     until: datetime.datetime,
@@ -78,11 +178,11 @@ def get_standing_times(
     with ProcessPoolExecutor(1) as executor:
         iterable = cache.iter_files(since=since, until=until, executor=executor)
         bikes = {}
-        bike_positions = {}
+        bike_positions: dict[str, BikePositionCollection] = {}
         standing_times = []
         missing = {}
 
-        DIST_THRESH_M = 100
+        # DIST_THRESH_M = 100
         MAX_GAP_SECONDS = 30  # allow up to 3 ticks missing (with 10s cadence)
         INSERT_THRESHOLD = 1000
 
@@ -105,118 +205,52 @@ def get_standing_times(
                 present_ids = set(country_bikes.keys())
 
                 # mark currently present bikes (and clear missing marker)
-                for bike_id, (
+                for bike_local_id, (
                     bike_type,
                     lat,
                     lon,
                     place_uid,
                     city_uid,
                 ) in country_bikes.items():
-                    bikes[bike_id] = (bike_id, bike_type)
-                    missing.pop(bike_id, None)
+                    bikes[bike_local_id] = (bike_local_id, bike_type)
+                    missing.pop(bike_local_id, None)
 
-                    if bike_id not in bike_positions:
+                    if bike_local_id not in bike_positions:
                         # (start_t, last_seen_t, lat, lon)
-                        bike_positions[bike_id] = (
-                            timestamp,
-                            timestamp,
-                            lat,
-                            lon,
-                            place_uid,
-                            city_uid,
+                        bike_positions[bike_local_id] = BikePositionCollection(
+                            bike_local_id, timestamp, lat, lon, place_uid, city_uid
                         )
                         continue
 
-                    start_t, last_seen_t, lat0, lon0, place_uid0, city_uid0 = (
-                        bike_positions[bike_id]
-                    )
-
-                    if (
-                        (city_uid == city_uid0)  # bike did not change city
-                        and (place_uid == place_uid0)  # bike did not change place
-                        and (
-                            (
-                                place_uid0 is not None
-                            )  # place id set -> bike stayed at the same place
-                            or haversine(lat, lon, lat0, lon0)
-                            < DIST_THRESH_M  # bike did not move too far
-                        )
-                    ):
-                        # still at same place: advance last_seen_t
-                        bike_positions[bike_id] = (
-                            start_t,
-                            timestamp,
-                            lat0,
-                            lon0,
-                            place_uid,
-                            city_uid,
-                        )
-                        continue
-
-                    # moved: close at last time we saw it at the old location
-                    standing_times.append(
-                        (
-                            bike_id,
-                            start_t,
-                            last_seen_t,
-                            lat0,
-                            lon0,
-                            place_uid0,
-                            city_uid0,
-                        )
-                    )
-
-                    # start new segment at the current observation time
-                    bike_positions[bike_id] = (
-                        timestamp,
-                        timestamp,
-                        lat,
-                        lon,
-                        place_uid,
-                        city_uid,
+                    bike_positions[bike_local_id].update_position(
+                        timestamp, lat, lon, place_uid, city_uid
                     )
 
                 # handle bikes not present now: start/continue missing timer
-                for bike_id in list(bike_positions.keys()):
-                    if bike_id in present_ids:
+                to_delete = []
+
+                for bike_local_id, bike_position_collection in bike_positions.items():
+                    if bike_local_id in present_ids:
                         continue
 
-                    if bike_id not in missing:
-                        missing[bike_id] = timestamp
+                    if bike_local_id not in missing:
+                        missing[bike_local_id] = timestamp
                         continue
 
-                    # if missing too long, close at the last time we actually saw it (not first_missing_ts)
-                    first_missing_ts = missing[bike_id]
+                    first_missing_ts = missing[bike_local_id]
                     if (timestamp - first_missing_ts).total_seconds() > MAX_GAP_SECONDS:
-                        start_t, last_seen_t, lat0, lon0, place_uid0, city_uid0 = (
-                            bike_positions.pop(bike_id)
-                        )
                         standing_times.append(
-                            (
-                                bike_id,
-                                start_t,
-                                last_seen_t,
-                                lat0,
-                                lon0,
-                                place_uid0,
-                                city_uid0,
-                            )
+                            bike_position_collection.compile_standing_time()
                         )
-                        missing.pop(bike_id, None)
+                        to_delete.append(bike_local_id)
 
-            # flushing remaining bikes (choose your semantics for "open" intervals)
-            for bike_id, (
-                start_t,
-                last_seen_t,
-                lat0,
-                lon0,
-                place_uid0,
-                city_uid0,
-            ) in bike_positions.items():
-                # standing_times.append((bike_id, start_t, last_seen_t, lat0, lon0, place_uid0))
-                ...
+                for bike_local_id in to_delete:
+                    missing.pop(bike_local_id, None)
+                    del bike_positions[bike_local_id]
 
-            # Todo: figure out, why sometimes one end time is the same as the next start time
+            # flushing remaining bikes
+            for bike_local_id, bike_position_collection in bike_positions.items():
+                standing_times.append(bike_position_collection.compile_standing_time())
 
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
@@ -261,11 +295,10 @@ def main():
     until = datetime.datetime.strptime(
         "2025-12-01T00-00-00", "%Y-%m-%dT%H-%M-%S"
     ).replace(tzinfo=datetime.timezone.utc)
-
     country_whitelist = [
+        "nextbike Leipzig",
         "Bre.Bike",
         "welo",  # Bonn
-        "nextbike Leipzig",
         "nextbike Berlin",
     ]
     for country in country_whitelist:
