@@ -296,17 +296,31 @@ def main():
         "2025-12-01T00-00-00", "%Y-%m-%dT%H-%M-%S"
     ).replace(tzinfo=datetime.timezone.utc)
     country_whitelist = [
-        "nextbike Leipzig",
-        "Bre.Bike",
-        "welo",  # Bonn
-        "nextbike Berlin",
+        # "nextbike Leipzig",
+        # "Bre.Bike",
+        # "welo",  # Bonn
+        # "nextbike Berlin",
+        # "nextbike BIH",  # Sarajevo
+        # "Potsdam Rad",  # Potsdam
+        # "Frelo",  # Freiburg
+        # "MOBIbike",  # Dresden
+        # "nextbike Frankfurt",  # Frankfurt
+        # "KVV.nextbike",  # Karlsruhe
+        # "KVB Rad",  # Köln
+        "VRNnextbike",  # Heidelberg
+        "VETURILO 3.0",  # Warszawa
+        "WienMobil Rad",  # Wien
     ]
     for country in country_whitelist:
+        print(f"finding standing times for {country:>40}")
         bikes, trips = get_standing_times(since, until, [country], False)
         insert_bikes("postgresql://localhost:5432/nextbike", bikes.values())
         insert_bike_records("postgresql://localhost:5432/nextbike", trips)
 
 
+# TODO: implement pickup from DB
+# TODO: implement consecutive save to DB without memory leak
+# TODO: implement non-duplicates when running the code for a city again
 if __name__ == "__main__":
     # print(haversine(51.333049, 12.38122, 51.332009, 12.382188))
     main()

@@ -10,7 +10,7 @@ from shapely.geometry import LineString
 from shapely.ops import linemerge
 from tqdm import tqdm
 
-from helpers import query_df
+from .helpers import query_df
 
 
 def get_trips(city_uid, start_time, end_time):
@@ -167,7 +167,7 @@ def main():
 
     trips = get_trips("1", since, until)
     interpolations = interpolate_trips(trips)
-    with open("interpolations.json", "w+") as f:
+    with open("results/interpolations.json", "w+") as f:
         json.dump(interpolations, f)
 
 
