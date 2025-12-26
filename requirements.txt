@@ -3,3 +3,5 @@ jsoncache/
 pytz
 matplotlib
 requests
+pandas
+sqlalchemy

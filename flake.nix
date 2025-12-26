@@ -33,10 +33,31 @@
           tkinter
         ]));
 
+        # 2. Database Scripts (Replace Aliases)
+        # We write these as standard shell scripts so they are available in ANY shell (zsh, fish, etc.)
+
+        dbInit = pkgs.writeShellScriptBin "db-init" ''
+          echo "Initializing database in $PGDATA..."
+          ${pkgs.postgresql_16}/bin/initdb -D "$PGDATA" --no-locale --encoding=UTF8
+        '';
+
+        dbStart = pkgs.writeShellScriptBin "db-start" ''
+          echo "Starting database..."
+          # Ensure logfile directory exists
+          mkdir -p "$(dirname "$PWD/.pg/logfile")"
+          ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" -l "$PWD/.pg/logfile" -o "-k $PGSOCKET" start
+        '';
+
+        dbStop = pkgs.writeShellScriptBin "db-stop" ''
+          echo "Stopping database..."
+          ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" stop
+        '';
+
         # 2. Common Tools
         devTools = with pkgs; [
           pkg-config
           __pythonPkg
+          postgresql
           cargo
           rustc
           rust-analyzer
@@ -50,6 +71,24 @@
         baseShellHook = ''
           export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath buildLibraries}:$LD_LIBRARY_PATH
           unset SOURCE_DATE_EPOCH
+
+          # --- PostgreSQL Setup & Aliases ---
+          export PGDATA="$PWD/.pg/data"
+          export PGSOCKET="$PWD/.pg/run"
+
+          # Create directories if they don't exist
+          mkdir -p $PGDATA $PGSOCKET
+
+          # add db commands to path
+          export PATH="$PATH:${dbInit}/bin:${dbStart}/bin:${dbStop}/bin"
+
+          echo "------------------------------------------------------------"
+          echo " PostgreSQL Aliases:"
+          echo "  db-init    -> Initialize a new database in .pg/data"
+          echo "  db-start   -> Start the database server"
+          echo "  db-stop    -> Stop the database server"
+          echo "  db-connect -> Connect to the default 'postgres' db via psql"
+          echo "------------------------------------------------------------"
         '';
 
       in
