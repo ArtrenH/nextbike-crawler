@@ -2,3 +2,4 @@ fastjsonpatch/
 jsoncache/
 pytz
 matplotlib
+requests
