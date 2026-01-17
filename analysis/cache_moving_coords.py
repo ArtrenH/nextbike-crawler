@@ -62,15 +62,15 @@ def _stationary_series(start_time, end_time, lon, lat):
     }
 
 
-def interpolate_trips(trips: pd.DataFrame):
+def interpolate_trips(trips: pd.DataFrame, graph_name: str, place_name: str):
     ox.settings.log_console = False
-    os.makedirs("cache", exist_ok=True)
+    os.makedirs("analysis/cache", exist_ok=True)
 
-    graph_path = "cache/leipzig_bike_projected.graphml"
+    graph_path = f"analysis/cache/{graph_name}_bike_projected.graphml"
     if os.path.exists(graph_path):
         G = ox.load_graphml(graph_path)
     else:
-        G0 = ox.graph_from_place("Leipzig, Saxony, Germany", network_type="bike")
+        G0 = ox.graph_from_place(place_name, network_type="bike")
         G = ox.project_graph(G0)
         ox.save_graphml(G, graph_path)
 
@@ -165,9 +165,20 @@ def main():
         "2025-11-02T00-00-00", "%Y-%m-%dT%H-%M-%S"
     ).replace(tzinfo=datetime.timezone.utc)
 
+    trips = get_trips("1170", since, until)
+    interpolations = interpolate_trips(trips, "bonn", "Bonn, Germany")
+    with open("analysis/results/interpolations_bonn.json", "w+") as f:
+        json.dump(interpolations, f)
+
+    return
     trips = get_trips("1", since, until)
-    interpolations = interpolate_trips(trips)
-    with open("results/interpolations.json", "w+") as f:
+    interpolations = interpolate_trips(trips, "leipzig", "Leipzig, Saxony, Germany")
+    with open("analysis/results/interpolations_leipzig.json", "w+") as f:
+        json.dump(interpolations, f)
+
+    trips = get_trips("362", since, until)
+    interpolations = interpolate_trips(trips, "berlin", "Berlin, Germany")
+    with open("analysis/results/interpolations_berlin.json", "w+") as f:
         json.dump(interpolations, f)
 
 

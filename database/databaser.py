@@ -39,7 +39,7 @@ def haversine(lat1, lon1, lat2, lon2):
 
 load_dotenv()
 
-DATABASE_URL = "postgresql://localhost:5432/nextbike"
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 def get_bike_locations(
@@ -194,7 +194,7 @@ def get_standing_times(
             ):
                 if insert_continuously and len(standing_times) >= INSERT_THRESHOLD:
                     insert_bike_records(
-                        "postgresql://localhost:5432/nextbike", standing_times
+                        DATABSE_URL, standing_times
                     )
                     standing_times = []
 
@@ -257,7 +257,7 @@ def get_standing_times(
             iterable.close()
 
     if insert_continuously:
-        insert_bike_records("postgresql://localhost:5432/nextbike", standing_times)
+        insert_bike_records(DATABSE_URL, standing_times)
         return []
     return bikes, standing_times
 
@@ -307,15 +307,15 @@ def main():
         # "nextbike Frankfurt",  # Frankfurt
         # "KVV.nextbike",  # Karlsruhe
         # "KVB Rad",  # Köln
-        "VRNnextbike",  # Heidelberg
-        "VETURILO 3.0",  # Warszawa
-        "WienMobil Rad",  # Wien
+        # "VRNnextbike",  # Heidelberg
+        # "VETURILO 3.0",  # Warszawa
+        # "WienMobil Rad",  # Wien
     ]
     for country in country_whitelist:
         print(f"finding standing times for {country:>40}")
         bikes, trips = get_standing_times(since, until, [country], False)
-        insert_bikes("postgresql://localhost:5432/nextbike", bikes.values())
-        insert_bike_records("postgresql://localhost:5432/nextbike", trips)
+        insert_bikes(DATABSE_URL, bikes.values())
+        insert_bike_records(DATABSE_URL, trips)
 
 
 # TODO: implement pickup from DB

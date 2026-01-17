@@ -9,7 +9,7 @@ import pandas as pd
 from folium.plugins import HeatMap, HeatMapWithTime
 from tqdm import tqdm
 
-from helpers import query_df
+from .helpers import query_df
 
 
 def get_standing_times():
@@ -160,7 +160,7 @@ def heatmap(name: str, city_uid: str | None = None):
     day = pd.Timestamp("2025-11-01T01")
     times = pd.date_range(
         start=day,
-        end=day + pd.Timedelta(days=1),
+        end=day + pd.Timedelta(hours=12),
         freq="10s",
         inclusive="left",
     )
@@ -168,7 +168,7 @@ def heatmap(name: str, city_uid: str | None = None):
     labels = []
     frames = []
 
-    with open("interpolations.json", "r") as f:
+    with open("analysis/results/interpolations_bonn.json", "r") as f:
         interpolations = json.load(f)
 
     for t in tqdm(times):
@@ -194,7 +194,7 @@ def heatmap(name: str, city_uid: str | None = None):
         max_speed=100,
     ).add_to(m)
 
-    m.save(f"results/bike_heatmap_{name}.html")
+    m.save(f"analysis/results/bike_heatmap_{name}.html")
 
 
 def availability_chart():
@@ -308,7 +308,7 @@ def location_tracker(
         max_speed=100,
     ).add_to(m)
 
-    m.save(f"results/{name}.html")
+    m.save(f"analysis/results/{name}.html")
 
     return coords1, coords2
 
@@ -318,9 +318,9 @@ if __name__ == "__main__":
     # location_tracker("bnd", 52.531669, 13.374053, 52.536062, 13.379980)
     # location_tracker("campus_poppelsdorf", 50.724548, 7.082587, 50.729243, 7.089389)
     # location_tracker("uni_bremen", 53.10440496644197, 8.847620416735856, 53.10945481241409, 8.864020481447133)
-    location_tracker("test", 0, 0, 90, 90)
+    # location_tracker("test", 0, 0, 90, 90)
     # heatmap("Bremen", "379")
     # heatmap("Leipzig_interpolated", "1")
     # heatmap("Leipzig", "1")
-    # heatmap("Bonn", "1170")
+    heatmap("Bonn", "1170")
     # heatmap("Berlin", "362")

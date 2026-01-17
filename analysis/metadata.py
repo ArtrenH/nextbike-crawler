@@ -8,13 +8,18 @@ from folium import Popup
 from folium.plugins import MarkerCluster
 from sqlalchemy import create_engine
 from tqdm import tqdm
+from dotenv import load_dotenv
+import os
 
-from helpers import haversine, query_df
+from .helpers import haversine, query_df
 
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 def plot_cities():
     df = query_df(
-        "postgresql://localhost:5432/nextbike",
+        DATABASE_URL,
         """
         SELECT name, lat, lng, lat_min, lng_min, lat_max, lng_max
         FROM cities
@@ -57,7 +62,7 @@ def plot_cities():
 
 def plot_trip_speeds(city_uid):
     df = query_df(
-        "postgresql://localhost:5432/nextbike",
+        DATABASE_URL,
         """
         SELECT id, start_time, end_time, start_latitude, start_longitude, end_latitude, end_longitude
         FROM bike_trips
@@ -78,12 +83,12 @@ def plot_trip_speeds(city_uid):
     df["time_seconds"] = (df["end_time"] - df["start_time"]).dt.total_seconds()
     df["speed"] = df["distance"] / df["time_seconds"]
     # plot speed distribution
-    df = df[df["speed"] < 8]
-    df = df[df["speed"] > 0.1]
-    df["speed"].hist(bins=100, figsize=(10, 5))
+    # df = df[df["speed"] > 0.1]
+    # df["speed"].hist(bins=100, figsize=(10, 5))
+    df.plot.scatter(x="time_seconds", y="distance", s=0.5, alpha=0.7)
     plt.title("Trip Speed Distribution")
-    plt.xlabel("Speed (m/s)")
-    plt.ylabel("Frequency")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Distance (m)")
     plt.show()
 
 
