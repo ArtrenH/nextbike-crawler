@@ -194,7 +194,7 @@ def get_standing_times(
             ):
                 if insert_continuously and len(standing_times) >= INSERT_THRESHOLD:
                     insert_bike_records(
-                        DATABSE_URL, standing_times
+                        DATABASE_URL, standing_times
                     )
                     standing_times = []
 
@@ -257,7 +257,7 @@ def get_standing_times(
             iterable.close()
 
     if insert_continuously:
-        insert_bike_records(DATABSE_URL, standing_times)
+        insert_bike_records(DATABASE_URL, standing_times)
         return []
     return bikes, standing_times
 
@@ -296,7 +296,7 @@ def main():
         "2025-12-01T00-00-00", "%Y-%m-%dT%H-%M-%S"
     ).replace(tzinfo=datetime.timezone.utc)
     country_whitelist = [
-        # "nextbike Leipzig",
+        "nextbike Leipzig",
         # "Bre.Bike",
         # "welo",  # Bonn
         # "nextbike Berlin",
@@ -314,8 +314,8 @@ def main():
     for country in country_whitelist:
         print(f"finding standing times for {country:>40}")
         bikes, trips = get_standing_times(since, until, [country], False)
-        insert_bikes(DATABSE_URL, bikes.values())
-        insert_bike_records(DATABSE_URL, trips)
+        insert_bikes(DATABASE_URL, bikes.values())
+        insert_bike_records(DATABASE_URL, trips)
 
 
 # TODO: implement pickup from DB
