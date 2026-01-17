@@ -25,7 +25,7 @@ from .helpers import (
 
 load_dotenv()
 
-DATABASE_URL = "postgresql://localhost:5432/nextbike"
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 def insert_countries(db_url: str = DATABASE_URL, records: Iterable[CountryRecord] = []):
@@ -304,7 +304,7 @@ def extract_bikes(
 if __name__ == "__main__":
     # print(haversine(51.333049, 12.38122, 51.332009, 12.382188))
     # quit()
-    since = datetime.datetime.strptime(
+    """since = datetime.datetime.strptime(
         "2025-11-01T00-00-00", "%Y-%m-%dT%H-%M-%S"
     ).replace(tzinfo=datetime.timezone.utc)
 
@@ -321,22 +321,24 @@ if __name__ == "__main__":
             until,
             [
                 "nextbike Leipzig",
-                "nextbike Berlin",
-                "welo",  # Bonn
-                "Bre.Bike",
+                # "nextbike Berlin",
+                # "welo",  # Bonn
+                # "Bre.Bike",
             ],
-        )
-    quit()
+        )"""
 
     since = datetime.datetime.strptime(
         "2025-11-01T00-00-00", "%Y-%m-%dT%H-%M-%S"
     ).replace(tzinfo=datetime.timezone.utc)
 
     until = datetime.datetime.strptime(
-        "2025-11-01T00-30-00", "%Y-%m-%dT%H-%M-%S"
+        "2025-11-01T00-15-00", "%Y-%m-%dT%H-%M-%S"
     ).replace(tzinfo=datetime.timezone.utc)
 
     for i in tqdm(range(31 * 4)):
-        extract_bikes(since, until)
+        # extract_bikes(since, until)
+        extract_countries(since, until)
+        extract_cities(since, until)
+        extract_places(since, until)
         since += datetime.timedelta(hours=6)
-        until += datetime.timedelta(days=6)
+        until += datetime.timedelta(hours=6)
